@@ -308,25 +308,25 @@ elif menu == "📊 Analytique":
     mode = st.radio("Analyser :", ["Joueur", "Équipe"], horizontal=True)
     scope = [st.selectbox("Joueur :", sorted(dict_athletes.keys()))] if mode == "Joueur" else [p.get("full_name") for p in profiles if p.get("team_id")]
 
-    res_resp = supabase.table("questionnaire_responses").select("*").execute().data or []
-    records = []
-    for r in res_resp:
-        jnom = dict_profiles.get(r.get("athlete_id") or r.get("user_id"), "Inconnu")
-        if r.get("rpe_score") is not None: records.append({"Joueur": jnom, "Date": str(r.get("submitted_at", ""))[:10], "Question": "RPE", "Valeur": float(r.get("rpe_score"))})
-    df = pd.DataFrame(records) if records else pd.DataFrame()
-    if not df.empty: df = df[df["Joueur"].isin(scope)]
-
-    t1, t2, t3, t4 = st.tabs(["Graphique", "Comparaison joueur", "Données GPS", "Données brutes"])
+   t1, t2, t3, t4 = st.tabs(["Graphique", "Comparaison joueur", "Données GPS", "Données brutes"])
+    
     with t1:
-        if not df.empty: st.plotly_chart(px.line(df, x="Date", y="Valeur", color="Joueur", template="plotly_dark"), use_container_width=True)
-        else: st.info("Pas de données.")
-    with t2: st.info("Comparaison disponible.")
-    with t3: st.info("Données GPS.")
+        if not df.empty:
+            st.plotly_chart(px.line(df, x="Date", y="Valeur", color="Joueur", template="plotly_dark"), use_container_width=True)
+        else:
+            st.info("Pas de données.")
+            
+    with t2:
+        st.info("Comparaison disponible.")
+        
+    with t3:
+        st.info("Données GPS.")
+        
     with t4:
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Aucune donnée brute disponible.")
+        if not df.empty:
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("Aucune donnée brute disponible.")
 
 # =====================================================================
 # GESTION DES PROFILS & ÉQUIPES (Modification complète des équipes)
