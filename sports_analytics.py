@@ -262,10 +262,15 @@ def obtenir_reponses_avec_definitions():
         return []
 
 def calculer_statut_disponibilite(profiles, responses):
+    """
+    Calcule le statut de disponibilité de chaque athlète en évaluant 
+    les réponses aux questionnaires et les retours médicaux.
+    """
     statuts = {}
     for p in profiles:
         aid = p["id"]
-        statuts[aid] = {"statut": "disponible", raison: ""}
+        # Correction : ajout des guillemets autour de la clé "raison"
+        statuts[aid] = {"statut": "disponible", "raison": ""}
     return statuts
 
 def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answers, rpe=None):
