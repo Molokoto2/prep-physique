@@ -1,293 +1,305 @@
-import os
-import io
-import csv
-import re
-import json
-import datetime
-import unicodedata
 import pandas as pd
+import io
+from datetime import datetime
 from supabase import create_client, Client
+import os
 
-def _get_secret(name: str, default: str = None):
-    val = os.environ.get(name)
-    if val:
-        return val
-    try:
-        import streamlit as st
-        return st.secrets.get(name, default)
-    except Exception:
-        return default
-
-SUPABASE_URL = _get_secret("SUPABASE_URL", "https://gedzzrwxefwycrtrgbwj.supabase.co")
-SUPABASE_KEY = _get_secret("SUPABASE_KEY", None)
-
-if not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_KEY manquante.")
-
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://gedzzrwxefwycrtrgbwj.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "SUPABASE_KEY_VALUE")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def connexion(email: str, password: str):
+FORMAT_BLESSURE = "blessure"
+COLONNES_GPS_NUMERIQUES = [
+    "distance_totale_m",
+    "distance_haute_intensite_m",
+    "distance_haute_vitesse_m",
+    "distance_sprint_m",
+    "nb_accelerations",
+    "nb_decelerations",
+    "vmax_kmh",
+    "meterage_par_minute",
+    "duree_secondes"
+]
+
+def lire_fichier_gps(file_bytes, nom_fichier=""):
+    """
+    Lit un fichier CSV ou Excel de GPS et extrait toutes les lignes valides
+    en associant chaque joueur (Player Name) à ses métriques.
+    """
+    try:
+        if nom_fichier.endswith(".csv"):
+            # Essayer de lire en sautant les lignes d'en-tête de métadonnées si présentes
+            df = pd.read_csv(io.BytesIO(file_bytes), skiprows=9)
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes), skiprows=9)
+    except Exception:
+        # Fallback de lecture directe si le fichier n'a pas les lignes de résumé en haut
+        try:
+            if nom_fichier.endswith(".csv"):
+                df = pd.read_csv(io.BytesIO(file_bytes))
+            else:
+                df = pd.read_excel(io.BytesIO(file_bytes))
+        except Exception as e:
+            raise Exception(f"Impossible de lire le fichier : {e}")
+
+    # Normaliser les noms de colonnes pour trouver "Player Name"
+    df.columns = [str(c).strip() for c in df.columns]
+    col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
+    
+    if not col_player:
+        # Si la colonne Player Name n'est pas trouvée, essayer de chercher dans les premières lignes
+        for i, row in df.iterrows():
+            row_str = str(row.values)
+            if "Player Name" in row_str or "Player" in row_str:
+                df = pd.read_csv(io.BytesIO(file_bytes), skiprows=i) if nom_fichier.endswith(".csv") else pd.read_excel(io.BytesIO(file_bytes), skiprows=i)
+                df.columns = [str(c).strip() for c in df.columns]
+                col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
+                break
+
+    if not col_player:
+        raise Exception("Colonne 'Player Name' introuvable dans le fichier.")
+
+    lignes_extraites = []
+    for _, row in df.iterrows():
+        nom_joueur = str(row.get(col_player, "")).strip()
+        if not nom_joueur or nom_joueur.lower() in ["nan", "none", "nat", ""]:
+            continue
+            
+        # Extraire les métriques correspondantes en gérant les variations de noms de colonnes
+        def get_val(possibles):
+            for p in possibles:
+                for c in df.columns:
+                    if p.lower() in c.lower():
+                        try:
+                            val = float(row.get(c, 0))
+                            return 0.0 if pd.isna(val) else val
+                        except:
+                            pass
+            return 0.0
+
+        ligne_data = {
+            "player_name": nom_joueur,
+            "distance_totale_m": get_val(["Distance", "Total Distance"]),
+            "distance_haute_intensite_m": get_val(["High Intensity", "High-Intensity", "HI Distance"]),
+            "distance_haute_vitesse_m": get_val(["High Speed", "Speed Distance"]),
+            "distance_sprint_m": get_val(["Sprint"]),
+            "nb_accelerations": get_val(["Accel"]),
+            "nb_decelerations": get_val(["Decel"]),
+            "vmax_kmh": get_val(["Vmax", "Max Velocity", "Speed Max"]),
+            "meterage_par_minute": get_val(["Meterage", "m/min", "Distance per minute"]),
+            "duree_secondes": get_val(["Duration", "Time"])
+        }
+        lignes_extraites.append(ligne_data)
+
+    return lignes_extraites
+
+def matcher_nom_athlete(nom_fichier, dict_athletes):
+    """
+    Retrouve l'ID Supabase d'un athlète à partir de son nom dans le fichier GPS.
+    """
+    nom_propre = nom_fichier.strip().lower()
+    for nom_db, uuid in dict_athletes.items():
+        if nom_db.strip().lower() == nom_propre:
+            return uuid
+    # Correspondance partielle (ex: nom de famille ou prénom)
+    for nom_db, uuid in dict_athletes.items():
+        parts = nom_db.strip().lower().split()
+        if any(p in nom_propre for p in parts if len(p) > 2):
+            return uuid
+    return None
+
+def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
+    """
+    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus.
+    """
+    n_inseres = 0
+    non_trouves = []
+    
+    for l in lignes:
+        p_name = l.pop("player_name")
+        athlete_id = matcher_nom_athlete(p_name, dict_athletes)
+        if athlete_id:
+            l["event_id"] = event_id
+            l["athlete_id"] = athlete_id
+            l["recorded_at"] = datetime.now().isoformat()
+            try:
+                supabase.table("gps_reports").insert(l).execute()
+                n_inseres += 1
+            except Exception:
+                pass
+        else:
+            if p_name not in non_trouves:
+                non_trouves.append(p_name)
+                
+    return n_inseres, non_trouves
+
+def obtenir_rapports_gps():
+    try:
+        res = supabase.table("gps_reports").select("*").execute()
+        return res.data if res.data else []
+    except Exception:
+        return []
+
+# Fonctions annexes d'authentification et gestion de comptes
+def connexion(email, password):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        if not res.user:
-            return None, None, "Identifiants invalides."
-        profile_res = supabase.table("profiles").select("*").eq("id", res.user.id).single().execute()
-        profile = profile_res.data
-        if not profile:
-            return None, None, "Compte sans profil associé."
-        return res.session, profile, None
+        if res.session and res.user:
+            prof = supabase.table("profiles").select("*").eq("id", res.user.id).single().execute()
+            return res.session, prof.data, None
     except Exception as e:
-        return None, None, f"Erreur de connexion : {e}"
+        return None, None, str(e)
+    return None, None, "Identifiants invalides."
 
 def deconnexion():
     try:
         supabase.auth.sign_out()
-    except Exception:
+    except:
         pass
 
-def creer_compte(email: str, password: str, full_name: str, role: str, team_id: str = None):
-    if role not in ("coach", "athlete"):
-        return False, "Rôle invalide."
+def creer_compte(email, password, full_name, role, team_id=None):
     try:
-        res = supabase.auth.admin.create_user({
-            "email": email, "password": password, "email_confirm": True,
-            "user_metadata": {"full_name": full_name}
-        })
+        res = supabase.auth.sign_up({"email": email, "password": password})
         if res.user:
-            supabase.table("profiles").upsert({
-                "id": res.user.id, "full_name": full_name, "role": role, "team_id": team_id
-            }).execute()
-            return True, f"Compte {role} créé pour {full_name} !"
-        return False, "Erreur création utilisateur."
+            data = {"id": res.user.id, "full_name": full_name, "role": role}
+            if team_id:
+                data["team_id"] = team_id
+            supabase.table("profiles").insert(data).execute()
+            return True, "Compte créé avec succès !"
     except Exception as e:
-        return False, f"Erreur : {e}"
+        return False, str(e)
+    return False, "Erreur lors de la création."
 
-def modifier_compte(user_id: str, full_name: str = None, role: str = None, team_id=None, new_password: str = None, new_email: str = None):
+def modifier_compte(user_id, full_name, role, team_id=None):
     try:
-        auth_upd = {}
-        if new_password: auth_upd["password"] = new_password
-        if new_email: auth_upd["email"] = new_email
-        if auth_upd: supabase.auth.admin.update_user_by_id(user_id, auth_upd)
-
-        prof_upd = {}
-        if full_name is not None: prof_upd["full_name"] = full_name
-        if role is not None: prof_upd["role"] = role
-        if team_id is not None: prof_upd["team_id"] = team_id if team_id != "" else None
-        if prof_upd: supabase.table("profiles").update(prof_upd).eq("id", user_id).execute()
-        return True, "Mis à jour avec succès."
+        data = {"full_name": full_name, "role": role, "team_id": team_id}
+        supabase.table("profiles").update(data).eq("id", user_id).execute()
+        return True, "Compte mis à jour."
     except Exception as e:
-        return False, f"Erreur : {e}"
+        return False, str(e)
 
-def supprimer_compte(user_id: str):
+def supprimer_compte(user_id):
     try:
         supabase.table("profiles").delete().eq("id", user_id).execute()
-        supabase.auth.admin.delete_user(user_id)
-        return True, "Supprimé définitivement."
+        return True, "Compte supprimé."
     except Exception as e:
-        return False, f"Erreur : {e}"
+        return False, str(e)
 
 def lister_comptes():
     try:
-        return supabase.table("profiles").select("*").order("role").execute().data or []
+        res = supabase.table("profiles").select("*, teams(name)").execute()
+        return res.data if res.data else []
     except:
         return []
 
-def definir_type_questionnaire(questionnaire_id: str, type_questionnaire: str):
-    supabase.table("questionnaires").update({"type": type_questionnaire}).eq("id", questionnaire_id).execute()
+def ajouter_athlete_manual(full_name, team_id=None):
+    pass
 
-def obtenir_fichiers_evenement(event_id: str):
+def modifier_athlete(athlete_id, full_name, team_id=None):
     try:
-        return supabase.table("session_files").select("*").eq("event_id", event_id).order("created_at", desc=True).execute().data or []
-    except:
-        return []
-
-def definir_minutes_avant(questionnaire_id: str, minutes: int):
-    supabase.table("questionnaires").update({"trigger_minutes": int(minutes)}).eq("id", questionnaire_id).execute()
-
-def definir_minutes_apres(questionnaire_id: str, minutes: int):
-    supabase.table("questionnaires").update({"post_window_minutes": int(minutes)}).eq("id", questionnaire_id).execute()
-
-def assigner_questionnaire(questionnaire_id: str, athlete_id: str, event_id: str = None):
-    try:
-        req = supabase.table("questionnaire_assignments").delete().eq("questionnaire_id", questionnaire_id).eq("athlete_id", athlete_id)
-        req = req.is_("event_id", None) if event_id is None else req.eq("event_id", event_id)
-        req.execute()
-    except:
-        pass
-    supabase.table("questionnaire_assignments").insert({
-        "questionnaire_id": questionnaire_id, "athlete_id": athlete_id, "event_id": event_id, "is_active": True
-    }).execute()
-
-def obtenir_assignations():
-    try:
-        return supabase.table("questionnaire_assignments").select("*").execute().data or []
-    except:
-        return []
-
-def questionnaire_disponible_pour(questionnaire_id: str, athlete_id: str, event_id: str, assignations: list) -> bool:
-    assignations_q = [a for a in assignations if a.get("questionnaire_id") == questionnaire_id]
-    if not assignations_q:
+        supabase.table("profiles").update({"full_name": full_name, "team_id": team_id}).eq("id", athlete_id).execute()
         return True
-    for a in assignations_q:
-        if a.get("athlete_id") != athlete_id: continue
-        if a.get("event_id") is None or a.get("event_id") == event_id: return True
-    return False
+    except:
+        return False
 
-def ajouter_athlete_manual(email: str, password: str, full_name: str, team_id: str = None):
-    return creer_compte(email, password, full_name, role="athlete", team_id=team_id)
-
-def modifier_athlete(athlete_id: str, new_name: str, new_team_id: str = None):
-    return supabase.table("profiles").update({"full_name": new_name, "team_id": new_team_id if new_team_id else None}).eq("id", athlete_id).execute()
-
-def supprimer_profil_athlete(athlete_id: str):
-    return supabase.table("profiles").delete().eq("id", athlete_id).execute()
-
-def creer_equipe(nom_equipe: str):
-    return supabase.table("teams").insert({"name": nom_equipe}).execute()
-
-def supprimer_equipe(team_id: str):
-    return supabase.table("teams").delete().eq("id", team_id).execute()
-
-FORMAT_BLESSURE = "injury_flag"
-
-def enregistrer_reponse_evenement(athlete_id: str, event_id: str, questionnaire_id: str, nouvelles_reponses: dict, rpe_score: float = None):
+def supprimer_profil_athlete(athlete_id):
     try:
-        existant = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute().data
-        deja = existant[0] if existant else None
-        reponses_existantes = (deja or {}).get("answers") or {}
-        if isinstance(reponses_existantes, str):
-            try: reponses_existantes = json.loads(reponses_existantes)
-            except: reponses_existantes = {}
-        reponses_fusionnees = dict(reponses_existantes)
-        reponses_fusionnees.update(nouvelles_reponses)
+        supabase.table("profiles").delete().eq("id", athlete_id).execute()
+        return True
+    except:
+        return False
 
-        payload = {
-            "athlete_id": athlete_id, "event_id": event_id,
-            "questionnaire_id": (deja.get("questionnaire_id") if deja else None) or questionnaire_id,
-            "answers": reponses_fusionnees,
-            "rpe_score": rpe_score if rpe_score is not None else (deja.get("rpe_score") if deja else None),
-            "submitted_at": datetime.datetime.now().isoformat(),
+def creer_equipe(name):
+    try:
+        supabase.table("teams").insert({"name": name}).execute()
+        return True
+    except:
+        return False
+
+def supprimer_equipe(team_id):
+    try:
+        supabase.table("teams").delete().eq("id", team_id).execute()
+        return True
+    except:
+        return False
+
+def obtenir_reponses_avec_definitions():
+    try:
+        res = supabase.table("questionnaire_responses").select("*, questionnaires(title, type)").execute()
+        return res.data if res.data else []
+    except:
+        return []
+
+def calculer_statut_disponibilite(profiles, responses):
+    statuts = {}
+    for p in profiles:
+        aid = p["id"]
+        statuts[aid] = {"statut": "disponible", raison: ""}
+    return statuts
+
+def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answers, rpe=None):
+    try:
+        data = {
+            "athlete_id": athlete_id,
+            "event_id": event_id,
+            "questionnaire_id": questionnaire_id,
+            "answers": answers,
+            "submitted_at": datetime.now().isoformat()
         }
-        supabase.table("questionnaire_responses").upsert(payload, on_conflict="athlete_id,event_id").execute()
+        if rpe is not None:
+            data["rpe"] = rpe
+        supabase.table("questionnaire_responses").upsert(data, on_conflict="athlete_id,event_id,questionnaire_id").execute()
         return True, None
     except Exception as e:
         return False, str(e)
 
-def obtenir_reponse_evenement(athlete_id: str, event_id: str):
+def obtenir_reponse_evenement(athlete_id, event_id):
     try:
-        res = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute().data
-        return res[0] if res else None
+        res = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute()
+        if res.data:
+            return res.data[0]
     except:
-        return None
+        pass
+    return None
 
-def obtenir_reponses_avec_definitions():
+def definir_minutes_avant(q_id, minutes):
     try:
-        res = supabase.table("questionnaire_responses").select("id, athlete_id, rpe_score, answers, submitted_at, questionnaire_id, questionnaires(questions)").execute()
-        return res.data or []
+        supabase.table("questionnaires").update({"trigger_minutes": minutes}).eq("id", q_id).execute()
+    except:
+        pass
+
+def definir_minutes_apres(q_id, minutes):
+    try:
+        supabase.table("questionnaires").update({"post_window_minutes": minutes}).eq("id", q_id).execute()
+    except:
+        pass
+
+def definir_type_questionnaire(q_id, q_type):
+    try:
+        supabase.table("questionnaires").update({"type": q_type}).eq("id", q_id).execute()
+    except:
+        pass
+
+def assigner_questionnaire(questionnaire_id, athlete_id, event_id=None):
+    try:
+        data = {"questionnaire_id": questionnaire_id, "athlete_id": athlete_id, "event_id": event_id}
+        supabase.table("questionnaire_assignments").insert(data).execute()
+    except:
+        pass
+
+def obtenir_assignations():
+    try:
+        res = supabase.table("questionnaire_assignments").select("*").execute()
+        return res.data if res.data else []
     except:
         return []
 
-def calculer_statut_disponibilite(profiles: list, responses: list):
-    statuts = {p["id"]: {"statut": "disponible", "depuis": None} for p in profiles if p.get("role") == "athlete"}
-    return statuts
+def questionnaire_disponible_pour(q_id, athlete_id, event_id, assignations):
+    return True
 
-COLONNES_GPS_CATAPULT = {
-    "Acceleration Efforts": "nb_accelerations", "Deceleration Efforts": "nb_decelerations",
-    "Duration": "duree_secondes", "Distance": "distance_totale_m", "Max Velocity": "vmax_kmh",
-    "Meterage Per Minute": "meterage_par_minute", "Sprint Distance": "distance_sprint_m",
-    "HI Distance": "distance_haute_intensite_m", "High Speed Distance": "distance_haute_vitesse_m",
-}
-
-COLONNES_GPS_NUMERIQUES = [
-    "distance_totale_m", "distance_haute_intensite_m", "distance_haute_vitesse_m",
-    "distance_sprint_m", "nb_accelerations", "nb_decelerations",
-    "vmax_kmh", "meterage_par_minute", "duree_secondes",
-]
-
-def _cle_nom(s: str) -> str:
-    s = str(s or "")
-    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^A-Za-z\s]", " ", s)
-    return " ".join(sorted(s.upper().split()))
-
-def matcher_nom_athlete(nom_fichier: str, dict_athletes: dict):
-    cle_cherchee = _cle_nom(nom_fichier)
-    if not cle_cherchee: return None
-    for nom, athlete_id in dict_athletes.items():
-        if _cle_nom(nom) == cle_cherchee: return athlete_id
-    return None
-
-def _parser_nombre_fr(val):
-    if val is None: return None
-    val = str(val).strip().strip('"').replace(" ", "").replace(",", ".")
-    try: return float(val)
-    except: return None
-
-def _parser_duree_hms(val):
-    if not val: return None
-    m = re.match(r"^(\d+):(\d{2}):(\d{2})$", str(val).strip().strip('"'))
-    if not m: return None
-    h, mn, s = (int(x) for x in m.groups())
-    return h * 3600 + mn * 60 + s
-
-def lire_fichier_gps(file_bytes: bytes, nom_fichier: str = ""):
-    texte = None
-    for enc in ("utf-8-sig", "cp1252", "latin1"):
-        try:
-            texte = file_bytes.decode(enc)
-            break
-        except: continue
-
-    if texte and "Player Name" in texte and "Period Name" in texte:
-        lignes_brutes = texte.splitlines()
-        idx_entete = next((i for i, l in enumerate(lignes_brutes) if "Player Name" in l and "Period Name" in l), None)
-        reader = csv.reader(lignes_brutes[idx_entete:], delimiter=";")
-        entetes = [e.strip().strip('"') for e in next(reader)]
-        idx_nom, idx_periode = entetes.index("Player Name"), entetes.index("Period Name")
-        lignes = []
-        for row in reader:
-            if len(row) <= max(idx_nom, idx_periode): continue
-            if row[idx_periode].strip().strip('"').lower() != "session": continue
-            nom_joueur = row[idx_nom].strip().strip('"')
-            if not nom_joueur: continue
-            ligne = {"nom_joueur": nom_joueur}
-            for col_f, cle_i in COLONNES_GPS_CATAPULT.items():
-                if col_f in entetes:
-                    idx = entetes.index(col_f)
-                    if idx < len(row):
-                        val = row[idx]
-                        ligne[cle_i] = _parser_duree_hms(val) if cle_i == "duree_secondes" else _parser_nombre_fr(val)
-            lignes.append(ligne)
-        return lignes
-    return []
-
-def enregistrer_rapport_gps(event_id: str, lignes: list, dict_athletes: dict):
-    inseres = 0
-    non_trouves = []
-    for ligne in lignes:
-        nom = str(ligne.get("nom_joueur", "")).strip()
-        athlete_id = matcher_nom_athlete(nom, dict_athletes)
-        if not athlete_id:
-            non_trouves.append(nom)
-            continue
-        record = {
-            "event_id": event_id, "athlete_id": athlete_id,
-            **{k: ligne.get(k) for k in COLONNES_GPS_NUMERIQUES},
-            "donnees_brutes": {k: v for k, v in ligne.items() if k != "nom_joueur"},
-            "created_id": datetime.datetime.now().isoformat()
-        }
-        try:
-            supabase.table("gps_reports").insert(record).execute()
-            inseres += 1
-        except Exception as e:
-            non_trouves.append(f"{nom} (erreur)")
-    return inseres, non_trouves
-
-def obtenir_rapports_gps(athlete_id: str = None, event_id: str = None):
+def obtenir_fichiers_evenement(event_id):
     try:
-        q = supabase.table("gps_reports").select("*, events(title, start_time)")
-        if athlete_id: q = q.eq("athlete_id", athlete_id)
-        if event_id: q = q.eq("event_id", event_id)
-        return q.order("created_at", desc=True).execute().data or []
+        res = supabase.table("session_files").select("*").eq("event_id", event_id).execute()
+        return res.data if res.data else []
     except:
         return []
