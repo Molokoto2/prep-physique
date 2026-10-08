@@ -205,29 +205,11 @@ st.markdown("""
 
     div[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; border: 1px solid var(--border-soft); }
     hr { border-color: var(--border-soft) !important; }
-
-    .badge-dispo {
-        background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.4);
-        padding: 3px 12px; border-radius: 999px; font-size: 0.85em; font-weight: 600;
-    }
-    .badge-blesse {
-        background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.4);
-        padding: 3px 12px; border-radius: 999px; font-size: 0.85em; font-weight: 600;
-    }
-
-    .brand-kicker {
-        font-family: 'Sora', sans-serif; font-weight: 800; font-size: 1.35em;
-        background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
-        -webkit-background-clip: text; background-clip: text; color: transparent;
-        letter-spacing: -0.02em; margin-bottom: 0;
-    }
-    .brand-tagline { color: var(--text-dim); font-size: 0.8em; margin-top: -6px; margin-bottom: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
 LABEL_QUESTION_BLESSURE = "Blessure / douleur empêchant de s'entraîner ?"
 
-# Persistance de session (évite la reconnexion au refresh)
 if "user_profile" not in st.session_state:
     st.session_state.user_profile = None
 
@@ -990,7 +972,7 @@ elif menu == "📊 Mes données":
             try: ans = json.loads(ans)
             except: ans = {}
         for k, v in ans.items():
-            records_flat.append({"Question": k, "Valeur": v, "Date": r.get("submitted_at","")[:10]})
+            records_flat.append({"Question": str(k), "Valeur": str(v), "Date": r.get("submitted_at","")[:10]})
     if records_flat:
         df_mes_donnees = pd.DataFrame(records_flat)
         st.dataframe(df_mes_donnees, use_container_width=True)
@@ -1044,9 +1026,7 @@ elif menu == "📊 Analytique":
             try: ans = json.loads(ans)
             except: ans = {}
         for k, v in ans.items():
-            try: val_c = float(v)
-            except: val_c = v
-            records_flat.append({"Joueur": nom, "Question": k, "Valeur": val_c, "Date": r.get("submitted_at","")[:10]})
+            records_flat.append({"Joueur": str(nom), "Question": str(k), "Valeur": str(v), "Date": r.get("submitted_at","")[:10]})
 
     df_flat = pd.DataFrame(records_flat) if records_flat else pd.DataFrame()
     if not df_flat.empty:
@@ -1059,15 +1039,9 @@ elif menu == "📊 Analytique":
     with tab_q:
         if not df_flat.empty:
             if is_team_mode:
-                st.markdown("### 👥 Moyenne de l'équipe par question")
-                df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
-                if not df_num.empty:
-                    moy_eq = df_num.groupby("Question")["Valeur"].mean().reset_index()
-                    moy_eq.columns = ["Question", "Moyenne Équipe"]
-                    st.dataframe(moy_eq, use_container_width=True)
-                    st.download_button("📥 Exporter la moyenne équipe (CSV)", data=moy_eq.to_csv(index=False).encode('utf-8'), file_name="moyenne_equipe_questions.csv", mime="text/csv", key="dl_csv_moy_eq")
-                else:
-                    st.info("Pas de données numériques.")
+                st.markdown("### 👥 Réponses de l'équipe par question")
+                st.dataframe(df_flat, use_container_width=True)
+                st.download_button("📥 Exporter les réponses équipe (CSV)", data=df_flat.to_csv(index=False).encode('utf-8'), file_name="equipe_questions.csv", mime="text/csv", key="dl_csv_moy_eq")
             else:
                 st.dataframe(df_flat, use_container_width=True)
                 st.download_button("📥 Exporter ces réponses (CSV)", data=df_flat.to_csv(index=False).encode('utf-8'), file_name="reponses_joueur.csv", mime="text/csv", key="dl_csv_rep_joueur")
@@ -1076,30 +1050,34 @@ elif menu == "📊 Analytique":
 
     with tab_g:
         if not df_flat.empty:
-            df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
+            df_num = df_flat.copy()
+            df_num["Valeur_num"] = pd.to_numeric(df_num["Valeur"], errors="coerce")
+            df_num = df_num.dropna(subset=["Valeur_num"])
             if not df_num.empty:
-                q_sel = st.selectbox("Variable :", df_num["Question"].unique(), key="sel_var_graph_an")
+                q_sel = st.selectbox("Variable numérique :", df_num["Question"].unique(), key="sel_var_graph_an")
                 if is_team_mode:
-                    df_moy_t = df_num[df_num["Question"] == q_sel].groupby("Date")["Valeur"].mean().reset_index()
-                    fig = px.line(df_moy_t, x="Date", y="Valeur", markers=True, title=f"Moyenne Équipe — {q_sel}", template="plotly_dark")
+                    df_moy_t = df_num[df_num["Question"] == q_sel].groupby("Date")["Valeur_num"].mean().reset_index()
+                    fig = px.line(df_moy_t, x="Date", y="Valeur_num", markers=True, title=f"Moyenne Équipe — {q_sel}", template="plotly_dark")
                     df_export_g = df_moy_t
                 else:
-                    fig = px.line(df_num[df_num["Question"] == q_sel], x="Date", y="Valeur", color="Joueur", markers=True, template="plotly_dark")
+                    fig = px.line(df_num[df_num["Question"] == q_sel], x="Date", y="Valeur_num", color="Joueur", markers=True, template="plotly_dark")
                     df_export_g = df_num[df_num["Question"] == q_sel]
                 st.plotly_chart(fig, use_container_width=True)
                 st.download_button("📥 Exporter les données du graphique (CSV)", data=df_export_g.to_csv(index=False).encode('utf-8'), file_name=f"graphique_{q_sel.replace(' ', '_')}.csv", mime="text/csv", key="dl_csv_graph")
             else:
-                st.info("Pas de données numériques pour le graphique.")
+                st.info("Pas de données numériques pour tracer un graphique.")
         else:
             st.info("Aucune donnée.")
 
     with tab_comp:
         st.markdown("### 🆚 Comparaison inter-joueurs")
         if not df_flat.empty:
-            df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
+            df_num = df_flat.copy()
+            df_num["Valeur_num"] = pd.to_numeric(df_num["Valeur"], errors="coerce")
+            df_num = df_num.dropna(subset=["Valeur_num"])
             if not df_num.empty:
                 q_sel = st.selectbox("Variable à comparer :", df_num["Question"].unique(), key="cmp_q_an")
-                fig_bar = px.bar(df_num[df_num["Question"] == q_sel], x="Joueur", y="Valeur", color="Joueur", template="plotly_dark", title=f"Comparaison : {q_sel}")
+                fig_bar = px.bar(df_num[df_num["Question"] == q_sel], x="Joueur", y="Valeur_num", color="Joueur", template="plotly_dark", title=f"Comparaison : {q_sel}")
                 st.plotly_chart(fig_bar, use_container_width=True)
                 st.download_button("📥 Exporter la comparaison (CSV)", data=df_num[df_num["Question"] == q_sel].to_csv(index=False).encode('utf-8'), file_name="comparaison_joueurs.csv", mime="text/csv", key="dl_csv_cmp")
             else:
