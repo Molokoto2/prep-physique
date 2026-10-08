@@ -388,7 +388,7 @@ def upload_file_direct_http(bucket_name, storage_path, file_bytes, mime_type):
 
 def get_statuts_disponibilite():
     if "cache_statuts_dispo" not in st.session_state:
-        profiles_all = supabase.table("profiles").select("*").execute().data or[cite: 4]
+        profiles_all = supabase.table("profiles").select("*").execute().data or []
         responses_def = obtenir_reponses_avec_definitions()
         st.session_state.cache_statuts_dispo = calculer_statut_disponibilite(profiles_all, responses_def)
     return st.session_state.cache_statuts_dispo
@@ -403,7 +403,7 @@ if menu == "📅 Planning & Séances":
     athletes_list = res_athletes.data if res_athletes.data else []
     dict_athletes = {a.get("full_name", f"Athlète {a['id']}"): a["id"] for a in athletes_list if a.get("full_name")}
     
-    teams_list_all = supabase.table("teams").select("*").execute().data or[cite: 4]
+    teams_list_all = supabase.table("teams").select("*").execute().data or []
     dict_teams_all = {t["name"]: t["id"] for t in teams_list_all}
 
     statuts = get_statuts_disponibilite()
@@ -535,7 +535,7 @@ if menu == "📅 Planning & Séances":
 
         st.markdown("#### 👁️ Affichage du planning")
         vue_planning = st.selectbox("Voir le planning de :", ["Mon planning global (toutes mes séances)", "Une équipe spécifique", "Un joueur spécifique"], key="select_vue_planning_coach")
-        tous_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or[cite: 4]
+        tous_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
 
         if vue_planning == "Une équipe spécifique" and dict_teams_all:
             eq_choisie_p = st.selectbox("Choisir l'équipe :", list(dict_teams_all.keys()), key="select_eq_plan_spec")
