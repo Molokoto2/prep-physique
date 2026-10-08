@@ -325,6 +325,8 @@ elif menu == "📊 Analytique":
     with t4:
     if not df.empty:
         st.dataframe(df, use_container_width=True)
+    else:
+        st.info("Aucune donnée brute disponible.")
 
 # =====================================================================
 # GESTION DES PROFILS & ÉQUIPES (Modification complète des équipes)
