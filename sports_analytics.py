@@ -1,5 +1,6 @@
 import pandas as pd
 import io
+import json
 import re
 import unicodedata
 import difflib
@@ -230,14 +231,21 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
                 "colonnes_ignorees": [], "verifie": None}
 
     date_seance = datetime.now().isoformat()
+    events_par_athlete = {}  # athlete_id -> id de SA séance (même titre + même horaire)
     try:
-        ev_res = supabase.table("events").select("start_time").eq("id", event_id).execute()
-        if ev_res.data and ev_res.data[0].get("start_time"):
-            date_seance = ev_res.data[0]["start_time"]
+        ev_res = supabase.table("events").select("title, start_time").eq("id", event_id).execute()
+        if ev_res.data:
+            ev0 = ev_res.data[0]
+            if ev0.get("start_time"):
+                date_seance = ev0["start_time"]
+            if ev0.get("title") and ev0.get("start_time"):
+                freres = supabase.table("events").select("id, athlete_id").eq("title", ev0["title"]).eq("start_time", ev0["start_time"]).execute().data or []
+                events_par_athlete = {e["athlete_id"]: e["id"] for e in freres if e.get("athlete_id")}
     except Exception:
         pass
 
     ids_importes = set()
+    ids_events_utilises = set()
     for l in lignes:
         p_name = l.get("player_name")
         athlete_id = matcher_nom_athlete(p_name, dict_athletes)
@@ -246,12 +254,14 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
                 resultat["non_trouves"].append(p_name)
             continue
 
+        event_cible = events_par_athlete.get(athlete_id, event_id)
+        ids_events_utilises.add(event_cible)
         try:
-            supabase.table("gps_reports").delete().eq("event_id", event_id).eq("athlete_id", athlete_id).execute()
+            supabase.table("gps_reports").delete().eq("event_id", event_cible).eq("athlete_id", athlete_id).execute()
         except Exception:
             pass
 
-        record = _preparer_record_gps(l, event_id, athlete_id, date_seance)
+        record = _preparer_record_gps(l, event_cible, athlete_id, date_seance)
         ok, ignorees, erreur = _inserer_gps_en_s_adaptant(record)
         for c in ignorees:
             # "recorded_at" est facultative (la date est lue depuis la séance) : pas d'alerte pour elle.
@@ -267,7 +277,7 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
     # Vérification : relit la base pour confirmer que les lignes y sont vraiment
     if ids_importes:
         try:
-            rel = supabase.table("gps_reports").select("athlete_id").eq("event_id", event_id).execute().data or []
+            rel = supabase.table("gps_reports").select("athlete_id").in_("event_id", list(ids_events_utilises)).execute().data or []
             resultat["verifie"] = len([r for r in rel if r.get("athlete_id") in ids_importes])
         except Exception as e:
             resultat["erreurs"].append(f"Vérification impossible : {e}")
@@ -407,8 +417,50 @@ def calculer_statut_disponibilite(profiles, responses):
         statuts[aid] = {"statut": "disponible", "raison": ""}
     return statuts
 
-def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answers, rpe=None):
+def _lire_answers(valeur):
+    if isinstance(valeur, str):
+        try:
+            valeur = json.loads(valeur)
+        except Exception:
+            return {}
+    return valeur if isinstance(valeur, dict) else {}
+
+def obtenir_reponses_athlete(athlete_id):
+    """Toutes les lignes de réponses d'un athlète."""
     try:
+        return supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).execute().data or []
+    except Exception as e:
+        print(f"Erreur lecture des réponses : {e}")
+        return []
+
+def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answers, rpe=None):
+    """
+    Enregistre (ou complète) les réponses d'un athlète pour une séance.
+    S'adapte à la base : une ligne par questionnaire, ou une seule ligne par (athlète, séance)
+    (dans ce cas les réponses sont fusionnées). La colonne "rpe" est facultative.
+    """
+    def _maj(ligne, fusion):
+        data = {"answers": fusion, "submitted_at": datetime.now().isoformat()}
+        if rpe is not None:
+            data["rpe"] = rpe
+        try:
+            supabase.table("questionnaire_responses").update(data).eq("id", ligne["id"]).execute()
+        except Exception:
+            if "rpe" not in data:
+                raise
+            data.pop("rpe")
+            supabase.table("questionnaire_responses").update(data).eq("id", ligne["id"]).execute()
+
+    try:
+        lignes = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute().data or []
+        existante = next((r for r in lignes if r.get("questionnaire_id") == questionnaire_id), None)
+
+        if existante:
+            fusion = _lire_answers(existante.get("answers"))
+            fusion.update(answers)
+            _maj(existante, fusion)
+            return True, None
+
         data = {
             "athlete_id": athlete_id,
             "event_id": event_id,
@@ -418,19 +470,60 @@ def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answer
         }
         if rpe is not None:
             data["rpe"] = rpe
-        supabase.table("questionnaire_responses").upsert(data, on_conflict="athlete_id,event_id,questionnaire_id").execute()
+        try:
+            try:
+                supabase.table("questionnaire_responses").insert(data).execute()
+            except Exception as e1:
+                if "rpe" in data and "rpe" in str(e1) and "duplicate" not in str(e1).lower():
+                    data.pop("rpe")
+                    supabase.table("questionnaire_responses").insert(data).execute()
+                else:
+                    raise
+        except Exception as e2:
+            msg = str(e2).lower()
+            if lignes and ("duplicate" in msg or "23505" in msg or "unique" in msg):
+                fusion = _lire_answers(lignes[0].get("answers"))
+                fusion.update(answers)
+                _maj(lignes[0], fusion)
+            else:
+                raise
         return True, None
     except Exception as e:
         return False, str(e)
 
 def obtenir_reponse_evenement(athlete_id, event_id):
+    """Réponse d'un athlète pour une séance (réponses de tous les questionnaires fusionnées)."""
     try:
         res = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute()
-        if res.data:
-            return res.data[0]
-    except:
-        pass
-    return None
+        if not res.data:
+            return None
+        base = dict(res.data[0])
+        fusion = {}
+        for r in res.data:
+            fusion.update(_lire_answers(r.get("answers")))
+        base["answers"] = fusion
+        return base
+    except Exception:
+        return None
+
+TITRE_RPE_AUTO = "RPE Post-Séance (Auto)"
+LABEL_RPE_AUTO = "Score RPE global de la séance"
+
+def obtenir_ou_creer_rpe_auto():
+    """Questionnaire RPE (1-10) automatique de chaque séance (créé s'il n'existe pas encore)."""
+    try:
+        ex = supabase.table("questionnaires").select("*").eq("title", TITRE_RPE_AUTO).execute().data
+        if ex:
+            return ex[0]
+        ins = supabase.table("questionnaires").insert({
+            "title": TITRE_RPE_AUTO,
+            "type": "post_event",
+            "questions": [{"label": LABEL_RPE_AUTO, "format": "scale", "scale_max": 10}]
+        }).execute().data
+        return ins[0] if ins else None
+    except Exception as e:
+        print(f"Erreur questionnaire RPE auto : {e}")
+        return None
 
 def definir_minutes_avant(q_id, minutes):
     try:
