@@ -109,25 +109,42 @@ def matcher_nom_athlete(nom_fichier, dict_athletes):
 
 def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
     """
-    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus.
+    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus
+    en se basant directement sur la date de la séance sélectionnée.
     """
     n_inseres = 0
     non_trouves = []
     
+    # Récupérer la date de la séance sélectionnée pour l'associer aux rapports
+    event_date_str = datetime.now().isoformat()
+    try:
+        ev_res = supabase.table("events").select("start_time").eq("id", event_id).execute()
+        if ev_res.data and ev_res.data[0].get("start_time"):
+            event_date_str = ev_res.data[0]["start_time"]
+    except Exception:
+        pass
+
     for l in lignes:
-        p_name = l.pop("player_name")
+        p_name = l.pop("player_name", None)
+        # Nettoyer les clés superflues si présentes
+        if "session_date" in l:
+            l.pop("session_date")
+            
         athlete_id = matcher_nom_athlete(p_name, dict_athletes)
+        
         if athlete_id:
             l["event_id"] = event_id
             l["athlete_id"] = athlete_id
-            l["recorded_at"] = datetime.now().isoformat()
+            l["recorded_at"] = event_date_str
+
             try:
-                supabase.table("gps_reports").insert(l).execute()
+                # Insertion ou mise à jour du rapport GPS pour cet athlète et cette séance
+                supabase.table("gps_reports").upsert(l, on_conflict="event_id,athlete_id").execute()
                 n_inseres += 1
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"Erreur insertion GPS : {ex}")
         else:
-            if p_name not in non_trouves:
+            if p_name and p_name not in non_trouves:
                 non_trouves.append(p_name)
                 
     return n_inseres, non_trouves
