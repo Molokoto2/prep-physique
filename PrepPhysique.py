@@ -748,6 +748,11 @@ elif menu == "📁 Fichiers & Rapports GPS":
 
     with tab_gps:
         st.subheader("🛰️ Importer un rapport GPS (fichier Excel / CSV)")
+        st.caption(
+            "Chaque joueur du fichier dont le nom correspond à un profil athlète de l'application est enregistré "
+            "(accents, majuscules et ordre Nom/Prénom ignorés). Les autres joueurs sont ignorés. "
+            "Réimporter la même séance remplace les données déjà importées."
+        )
         if not dict_events:
             st.warning("Créez d'abord une séance.")
         else:
@@ -755,7 +760,7 @@ elif menu == "📁 Fichiers & Rapports GPS":
             gps_file = st.file_uploader("Fichier GPS", type=["csv", "xlsx", "xls"], key="gps_file_uploader")
 
             if gps_file:
-                file_bytes_content = gps_file.read()
+                file_bytes_content = gps_file.getvalue()
                 try:
                     lignes = lire_fichier_gps(file_bytes_content, nom_fichier=gps_file.name)
                 except Exception as ex:
@@ -763,22 +768,60 @@ elif menu == "📁 Fichiers & Rapports GPS":
                     st.error(f"Erreur lecture fichier : {ex}")
 
                 if lignes:
-                    df_preview = pd.DataFrame(lignes)
-                    st.write(f"**Aperçu ({len(lignes)} ligne(s) détectée(s)) :**")
-                    st.dataframe(df_preview, use_container_width=True)
+                    apercu, noms_reconnus = [], []
+                    for l in lignes:
+                        uid = matcher_nom_athlete(l.get("player_name"), dict_athletes)
+                        profil = next((n for n, i in dict_athletes.items() if i == uid), None) if uid else None
+                        if uid:
+                            noms_reconnus.append(f"{l.get('player_name')} → {profil}")
+                        apercu.append({"Statut": "✅ Profil trouvé" if uid else "⚪ Pas de profil", "Profil dans l'app": profil or "—", **l})
 
-                    if st.button("💾 Importer ce rapport GPS", type="primary"):
+                    st.write(f"**Aperçu ({len(lignes)} ligne(s) détectée(s)) :**")
+                    st.dataframe(pd.DataFrame(apercu), use_container_width=True)
+
+                    if noms_reconnus:
+                        st.success(f"✅ {len(noms_reconnus)} joueur(s) du fichier ont un profil et seront importés : " + " ; ".join(noms_reconnus))
+                    else:
+                        st.warning("⚠️ Aucun joueur du fichier ne correspond à un profil athlète : rien ne sera importé. Vérifiez l'orthographe du nom dans 'Gestion des profils'.")
+
+                    if st.button("💾 Importer ce rapport GPS", type="primary", key="btn_import_gps", disabled=(len(noms_reconnus) == 0)):
                         selected_event = dict_events[gps_event_label]
-                        n_inseres, non_trouves = enregistrer_rapport_gps(selected_event["id"], lignes, dict_athletes)
-                        
-                        if n_inseres > 0:
-                            st.success(f"✅ {n_inseres} ligne(s) GPS enregistrée(s) avec succès (correspondant aux profils existants) !")
+                        with st.spinner("Import en cours..."):
+                            res = enregistrer_rapport_gps(selected_event["id"], [dict(l) for l in lignes], dict_athletes)
+
+                        # Pas de st.rerun() ici : sinon le message disparaît aussitôt.
+                        if res["inseres"] > 0:
+                            st.success(
+                                f"✅ {res['inseres']} ligne(s) GPS enregistrée(s) dans la base : "
+                                + ", ".join(res["importes"])
+                                + ". Retrouvez-les dans 📊 Analytique → Les données GPS."
+                            )
+                            if res["verifie"] is not None:
+                                st.caption(f"🔎 Vérification : {res['verifie']} ligne(s) relue(s) dans la base pour cette séance.")
                         else:
-                            st.warning("⚠️ Aucune ligne n'a pu être enregistrée. Vérifiez que le nom de l'athlète dans le fichier correspond au profil créé dans l'application.")
-                            
-                        if non_trouves:
-                            st.info(f"ℹ️ Lignes ignorées (profils non créés dans l'application) : {len(non_trouves)} joueur(s). Seules les lignes des joueurs enregistrés (comme Axel) ont été importées.")
-                        st.rerun()
+                            st.error("❌ Aucune ligne n'a pu être enregistrée dans la base.")
+
+                        if res["colonnes_ignorees"]:
+                            st.warning(
+                                "⚠️ Ces colonnes n'existent pas dans la table `gps_reports` de Supabase, leurs valeurs n'ont donc pas été "
+                                "sauvegardées : **" + ", ".join(res["colonnes_ignorees"]) + "**. Pour les conserver, exécutez dans Supabase (SQL Editor) :"
+                            )
+                            st.code("\n".join(
+                                f"alter table gps_reports add column if not exists {c} "
+                                + ("timestamptz" if c == "recorded_at" else "double precision") + ";"
+                                for c in res["colonnes_ignorees"]
+                            ), language="sql")
+                        if res["erreurs"]:
+                            st.error("Erreur(s) renvoyée(s) par la base de données :")
+                            for e in res["erreurs"]:
+                                st.code(e)
+                            st.info(
+                                "💡 Si l'erreur parle de « row-level security » / « permission denied », la clé SUPABASE_KEY utilisée par le site "
+                                "est la clé publique (anon) : remplacez-la par la clé **service_role** dans les secrets Streamlit, "
+                                "ou ajoutez une policy d'insertion sur `gps_reports`."
+                            )
+                        if res["non_trouves"]:
+                            st.info(f"ℹ️ {len(res['non_trouves'])} joueur(s) du fichier sans profil dans l'application (ignorés).")
                 else:
                     st.info("Aucune ligne exploitable trouvée automatiquement. Vérifiez les colonnes de votre fichier ou essayez un export CSV classique.")
 
@@ -1093,21 +1136,51 @@ elif menu == "📊 Analytique":
     with tab_gps:
         st.markdown("### 🛰️ Données & Rapports GPS")
         gps_all = obtenir_rapports_gps()
-        gps_rows = [{ "Joueur": dict_profiles.get(g.get("athlete_id")), **{m: g.get(m) for m in COLONNES_GPS_NUMERIQUES} } for g in gps_all]
-        df_gps_all = pd.DataFrame(gps_rows) if gps_rows else pd.DataFrame()
-        if not df_gps_all.empty and "Joueur" in df_gps_all.columns:
-            df_gps_all = df_gps_all[df_gps_all["Joueur"].isin(scope_joueurs)]
+        gps_rows = []
+        for g in gps_all:
+            ligne = {
+                "Joueur": dict_profiles.get(g.get("athlete_id")) or "Athlète inconnu",
+                "Séance": g.get("seance_titre", "Séance"),
+                "Date": str(g.get("seance_date") or "")[:10],
+            }
+            for m in COLONNES_GPS_NUMERIQUES:
+                ligne[NOMS_METRIQUES_GPS.get(m, m)] = g.get(m)
+            gps_rows.append(ligne)
+        df_gps_tous = pd.DataFrame(gps_rows) if gps_rows else pd.DataFrame()
+        colonnes_metriques = [NOMS_METRIQUES_GPS.get(m, m) for m in COLONNES_GPS_NUMERIQUES]
+
+        df_gps_all = df_gps_tous[df_gps_tous["Joueur"].isin(scope_joueurs)].copy() if not df_gps_tous.empty else pd.DataFrame()
+
+        if df_gps_all.empty:
+            if df_gps_tous.empty:
+                st.info("Aucun rapport GPS importé pour le moment. Rendez-vous dans '📁 Fichiers & Rapports GPS' → 'Importer un rapport GPS'.")
+            else:
+                st.info(
+                    "Aucun rapport GPS pour cette sélection. Des rapports existent pour : "
+                    + ", ".join(sorted(df_gps_tous["Joueur"].unique()))
+                )
+        else:
             if is_team_mode:
-                st.markdown("#### 👥 Moyennes GPS de l'équipe")
-                df_gps_moy = df_gps_all.mean(numeric_only=True).reset_index()
-                st.dataframe(df_gps_moy, use_container_width=True)
+                st.markdown("#### 👥 Moyenne GPS de l'équipe, séance par séance")
+                df_gps_moy = df_gps_all.groupby(["Date", "Séance"], as_index=False)[colonnes_metriques].mean().sort_values("Date")
+                df_gps_moy.insert(2, "Nb joueurs", df_gps_all.groupby(["Date", "Séance"])["Joueur"].nunique().values)
+                st.dataframe(df_gps_moy.round(2), use_container_width=True)
+                metrique_g = st.selectbox("Métrique à tracer :", colonnes_metriques, key="sel_metrique_gps_eq")
+                df_gps_moy["Séance (date)"] = df_gps_moy["Séance"] + " — " + df_gps_moy["Date"]
+                st.plotly_chart(px.bar(df_gps_moy, x="Séance (date)", y=metrique_g, template="plotly_dark",
+                                       title=f"Moyenne équipe — {metrique_g}"), use_container_width=True)
                 st.download_button("📥 Exporter les moyennes GPS équipe (CSV)", data=df_gps_moy.to_csv(index=False).encode('utf-8'), file_name="moyennes_gps_equipe.csv", mime="text/csv", key="dl_csv_gps_moy")
+                with st.expander("Voir le détail par joueur"):
+                    st.dataframe(df_gps_all.round(2), use_container_width=True)
             else:
                 st.markdown("#### Rapports GPS individuels")
-                st.dataframe(df_gps_all, use_container_width=True)
+                df_gps_all = df_gps_all.sort_values("Date")
+                st.dataframe(df_gps_all.round(2), use_container_width=True)
+                metrique_g = st.selectbox("Métrique à tracer :", colonnes_metriques, key="sel_metrique_gps_ind")
+                df_gps_all["Séance (date)"] = df_gps_all["Séance"] + " — " + df_gps_all["Date"]
+                st.plotly_chart(px.bar(df_gps_all, x="Séance (date)", y=metrique_g, color="Joueur", barmode="group",
+                                       template="plotly_dark", title=metrique_g), use_container_width=True)
                 st.download_button("📥 Exporter les rapports GPS (CSV)", data=df_gps_all.to_csv(index=False).encode('utf-8'), file_name="rapports_gps.csv", mime="text/csv", key="dl_csv_gps_indiv")
-        else:
-            st.info("Aucun rapport GPS importé pour le moment.")
 
     with tab_brut:
         st.markdown("### 📋 Données brutes")
