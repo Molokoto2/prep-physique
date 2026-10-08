@@ -94,23 +94,38 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
 
 def matcher_nom_athlete(nom_fichier, dict_athletes):
     """
-    Retrouve l'ID Supabase d'un athlète à partir de son nom dans le fichier GPS.
+    Retrouve l'ID Supabase d'un athlète de manière ultra-souple (insensible à la casse,
+    aux espaces multiples, et à l'ordre Nom/Prénom).
     """
-    nom_propre = nom_fichier.strip().lower()
+    if not nom_fichier:
+        return None
+    
+    # Nettoyer et normaliser le nom du fichier
+    nom_propre = " ".join(str(nom_fichier).strip().lower().split())
+    
+    # 1. Correspondance exacte
     for nom_db, uuid in dict_athletes.items():
-        if nom_db.strip().lower() == nom_propre:
+        if " ".join(nom_db.strip().lower().split()) == nom_propre:
             return uuid
-    # Correspondance partielle (ex: nom de famille ou prénom)
+            
+    # 2. Correspondance inversée ou par ensemble de mots (Prénom Nom vs Nom Prénom)
+    mots_fichier = set(nom_propre.split())
     for nom_db, uuid in dict_athletes.items():
-        parts = nom_db.strip().lower().split()
-        if any(p in nom_propre for p in parts if len(p) > 2):
+        mots_db = set(nom_db.strip().lower().split())
+        if mots_fichier and mots_fichier == mots_db:
             return uuid
+            
+    # 3. Correspondance partielle forte (si les mots clés du nom en base sont dans le fichier)
+    for nom_db, uuid in dict_athletes.items():
+        mots_db = [m for m in nom_db.strip().lower().split() if len(m) > 2]
+        if mots_db and all(m in nom_propre for m in mots_db):
+            return uuid
+            
     return None
 
 def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
     """
-    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus
-    en contournant les conflits de contraintes par insertion directe.
+    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus.
     """
     n_inseres = 0
     non_trouves = []
@@ -136,14 +151,13 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
             l["recorded_at"] = event_date_str
 
             try:
-                # Supprimer d'abord l'ancien rapport s'il existe pour cette séance et ce joueur
+                # Supprimer l'ancien rapport s'il existe pour éviter les doublons
                 supabase.table("gps_reports").delete().eq("event_id", event_id).eq("athlete_id", athlete_id).execute()
-                
-                # Insérer le nouveau rapport propre
+                # Insérer le nouveau rapport
                 supabase.table("gps_reports").insert(l).execute()
                 n_inseres += 1
             except Exception as ex:
-                print(f"Erreur insertion GPS pour {p_name} : {ex}")
+                print(f"Erreur Supabase insertion GPS : {ex}")
         else:
             if p_name and p_name not in non_trouves:
                 non_trouves.append(p_name)
