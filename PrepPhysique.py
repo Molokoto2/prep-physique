@@ -580,7 +580,7 @@ elif menu == "📁 Fichiers & Rapports GPS":
                     lignes = lire_fichier_gps(gps_file.read(), nom_fichier=gps_file.name)
                 except Exception as ex:
                     lignes = []
-                    st.error(fErreur de lecture du GPS : {ex})
+                    st.error(f"Erreur de lecture du GPS : {ex}")
 
                 if lignes:
                     st.dataframe(pd.DataFrame(lignes), use_container_width=True)
