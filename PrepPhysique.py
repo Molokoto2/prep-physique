@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import json
 import requests
 import base64
+import os
 
 def _get_secret(name: str, default: str = None):
     val = os.environ.get(name)
