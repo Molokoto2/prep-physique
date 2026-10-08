@@ -21,6 +21,9 @@ COLONNES_GPS_NUMERIQUES = [
     "duree_secondes"
 ]
 
+import pandas as pd
+import io
+
 def parse_duree_en_minutes(val_str):
     """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
     if pd.isna(val_str):
@@ -93,7 +96,6 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
                             pass
             return 0.0
 
-        # Récupération et conversion de la durée brute en minutes
         duree_brute = row.get("Duration", row.get("Time", 0))
         duree_minutes = parse_duree_en_minutes(duree_brute)
 
@@ -107,7 +109,7 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
             "nb_decelerations": get_val(["Decel"]),
             "vmax_kmh": get_val(["Vmax", "Max Velocity", "Speed Max"]),
             "meterage_par_minute": get_val(["Meterage", "m/min", "Distance per minute"]),
-            "duree_secondes": duree_minutes  # stocké en minutes converties
+            "duree_secondes": duree_minutes
         }
         lignes_extraites.append(ligne_data)
 
