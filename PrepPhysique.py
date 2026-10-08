@@ -95,7 +95,6 @@ st.markdown("""
     p, span, label, .stMarkdown, .stCaption { font-family: 'Inter', sans-serif; }
     [data-testid="stCaptionContainer"] { color: var(--text-dim) !important; }
 
-    /* Ajustement bouton ouverture barre latérale (plus bas sur mobile/écran) */
     [data-testid="collapsedControl"] {
         top: 1.5rem !important;
         left: 1rem !important;
@@ -105,7 +104,6 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
     }
 
-    /* Masquer les boutons superflus en haut à droite (GitHub, share, etc.) */
     header [data-testid="stToolbar"] {
         display: none !important;
     }
@@ -425,7 +423,6 @@ if menu == "📅 Planning & Séances":
     c_stat2.metric("✅ Disponibles", n_dispo)
     c_stat3.metric("🚑 En réathlétisation", n_blesses)
 
-    # Section Alertes Coach (douleurs musculaires, wellness extrême, écart RPE cible)
     st.markdown("---")
     st.subheader("🚨 Alertes & Remontées Joueurs")
     toutes_reponses_alertes = obtenir_reponses_avec_definitions()
@@ -519,7 +516,6 @@ if menu == "📅 Planning & Séances":
                 else:
                     try:
                         res_inserted = supabase.table("events").insert(events_to_insert).execute()
-                        # Création automatique du questionnaire RPE (1 à 10) par défaut pour ces séances
                         q_exist = supabase.table("questionnaires").select("id").eq("title", "RPE Post-Séance (Auto)").execute().data
                         if q_exist:
                             q_auto_id = q_exist[0]["id"]
@@ -543,18 +539,17 @@ if menu == "📅 Planning & Séances":
     with tab_existantes:
         import calendar as _calendar
 
-        # Filtre de vue Planning pour le coach (Son planning, Équipe, ou Joueur)
         st.markdown("#### 👁️ Affichage du planning")
-        vue_planning = st.selectbox("Voir le planning de :", ["Mon planning global (toutes mes séances)", "Une équipe spécifique", "Un joueur spécifique"])
+        vue_planning = st.selectbox("Voir le planning de :", ["Mon planning global (toutes mes séances)", "Une équipe spécifique", "Un joueur spécifique"], key="select_vue_planning_coach")
         tous_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
 
         if vue_planning == "Une équipe spécifique" and dict_teams_all:
-            eq_choisie_p = st.selectbox("Choisir l'équipe :", list(dict_teams_all.keys()))
+            eq_choisie_p = st.selectbox("Choisir l'équipe :", list(dict_teams_all.keys()), key="select_eq_plan_spec")
             eq_id_p = dict_teams_all[eq_choisie_p]
             ids_eq_athletes = {a["id"] for a in athletes_list if a.get("team_id") == eq_id_p}
             tous_events = [e for e in tous_events if e.get("athlete_id") in ids_eq_athletes]
         elif vue_planning == "Un joueur spécifique" and dict_athletes:
-            joueur_choisi_p = st.selectbox("Choisir le joueur :", list(dict_athletes.keys()))
+            joueur_choisi_p = st.selectbox("Choisir le joueur :", list(dict_athletes.keys()), key="select_joueur_plan_spec")
             j_id_p = dict_athletes[joueur_choisi_p]
             tous_events = [e for e in tous_events if e.get("athlete_id") == j_id_p]
 
@@ -587,7 +582,8 @@ if menu == "📅 Planning & Séances":
             with c_nav3:
                 if st.button("Mois suivant ▶", use_container_width=True):
                     ref = st.session_state.cal_mois_ref
-                    st.session_state.cal_mois_ref = (ref.replace(day=28) + timedelta(days=4)).replace(day=1)
+                    mois_suivant = (ref.replace(day=28) + timedelta(days=4)).replace(day=1)
+                    st.session_state.cal_mois_ref = mois_suivant
                     st.rerun()
 
             annee, mois = st.session_state.cal_mois_ref.year, st.session_state.cal_mois_ref.month
@@ -703,11 +699,11 @@ elif menu == "📁 Fichiers & Rapports GPS":
         if not dict_events:
             st.warning("Aucune séance planifiée.")
         else:
-            selected_event_label = st.selectbox("📌 Choisir la séance :", list(dict_events.keys()))
+            selected_event_label = st.selectbox("📌 Choisir la séance :", list(dict_events.keys()), key="sel_evt_pdf_up")
             selected_event = dict_events[selected_event_label]
-            session_title = st.text_input("Nom du document / Titre du PDF :", value=selected_event.get("title", ""))
-            description = st.text_area("Instructions :")
-            uploaded_file = st.file_uploader("Fichier PDF ou Image", type=["pdf", "png", "jpg", "jpeg"])
+            session_title = st.text_input("Nom du document / Titre du PDF :", value=selected_event.get("title", ""), key="inp_titre_pdf")
+            description = st.text_area("Instructions :", key="inp_desc_pdf")
+            uploaded_file = st.file_uploader("Fichier PDF ou Image", type=["pdf", "png", "jpg", "jpeg"], key="up_pdf_file")
 
             if st.button("🚀 Publier sur la séance", type="primary"):
                 if not session_title or not uploaded_file:
@@ -775,16 +771,17 @@ elif menu == "📝 Questionnaires":
     tab_creer, tab_envoyer, tab_repondre = st.tabs(["🆕 Créer", "📩 Assigner", "✍️ Saisie manuelle"])
 
     with tab_creer:
-        q_title = st.text_input("Titre du questionnaire")
-        q_type = "pre_event" if "Pre" in st.selectbox("Type", ["Pre-Event (Wellness)", "Post-Event (RPE)"]) else "post_event"
+        q_title = st.text_input("Titre du questionnaire", key="inp_titre_q_new")
+        q_type_sel = st.selectbox("Type", ["Pre-Event (Wellness)", "Post-Event (RPE)"], key="sel_type_q_new")
+        q_type = "pre_event" if "Pre" in q_type_sel else "post_event"
         if "questions_draft" not in st.session_state:
             st.session_state.questions_draft = []
 
-        new_q_label = st.text_input("Intitulé de la question")
-        q_format = st.selectbox("Format", ["Échelle numérique", "Texte libre", "Nombre libre", "🚑 Oui/Non (blessure)"])
-        scale_max = st.number_input("Max", 2, 10, 5) if "Échelle" in q_format else None
+        new_q_label = st.text_input("Intitulé de la question", key="inp_intitule_q")
+        q_format = st.selectbox("Format", ["Échelle numérique", "Texte libre", "Nombre libre", "🚑 Oui/Non (blessure)"], key="sel_fmt_q")
+        scale_max = st.number_input("Max", 2, 10, 5, key="num_scale_max_q") if "Échelle" in q_format else None
 
-        if st.button("+ Ajouter la question"):
+        if st.button("+ Ajouter la question", key="btn_add_q_draft"):
             if new_q_label:
                 fmt = FORMAT_BLESSURE if "blessure" in q_format.lower() else ("scale" if "Échelle" in q_format else ("number" if "Nombre" in q_format else "text"))
                 st.session_state.questions_draft.append({"label": new_q_label, "format": fmt, "scale_max": scale_max})
@@ -793,7 +790,7 @@ elif menu == "📝 Questionnaires":
         for idx, q in enumerate(st.session_state.questions_draft):
             st.info(f"Q{idx+1}: {q['label']} ({q['format']})")
 
-        if st.button("💾 Enregistrer le modèle", type="primary"):
+        if st.button("💾 Enregistrer le modèle", type="primary", key="btn_save_q_model"):
             if q_title and st.session_state.questions_draft:
                 supabase.table("questionnaires").insert({"title": q_title, "type": q_type, "questions": st.session_state.questions_draft}).execute()
                 st.session_state.questions_draft = []
@@ -806,10 +803,10 @@ elif menu == "📝 Questionnaires":
         if q_data and a_data:
             dict_q_obj = {q["title"]: q for q in q_data}
             dict_a = {a["full_name"]: a["id"] for a in a_data if a.get("full_name")}
-            sel_q_title = st.selectbox("Questionnaire :", list(dict_q_obj.keys()))
+            sel_q_title = st.selectbox("Questionnaire :", list(dict_q_obj.keys()), key="sel_q_assign_title")
             q_obj_sel = dict_q_obj[sel_q_title]
-            sel_a = st.multiselect("Athlète(s) :", list(dict_a.keys()))
-            if st.button("Attribuer", type="primary"):
+            sel_a = st.multiselect("Athlète(s) :", list(dict_a.keys()), key="multisel_athletes_assign")
+            if st.button("Attribuer", type="primary", key="btn_do_assign_q"):
                 for name in sel_a:
                     assigner_questionnaire(q_obj_sel["id"], dict_a[name], None)
                 st.success("Assigné !")
@@ -819,15 +816,15 @@ elif menu == "📝 Questionnaires":
         athletes = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
         dict_athletes = {a.get("full_name"): a["id"] for a in athletes if a.get("full_name")}
         if dict_athletes:
-            sel_athlete_name = st.selectbox("Athlète :", list(dict_athletes.keys()))
+            sel_athlete_name = st.selectbox("Athlète :", list(dict_athletes.keys()), key="sel_ath_saisie_man")
             selected_athlete_id = dict_athletes[sel_athlete_name]
             events_ath = supabase.table("events").select("id, title, start_time").eq("athlete_id", selected_athlete_id).execute().data or []
             dict_events_rep = {f"{ev.get('title')} — {ev.get('start_time','')[:16]}": ev["id"] for ev in events_ath}
             q_list = supabase.table("questionnaires").select("*").execute().data or []
             if dict_events_rep and q_list:
-                sel_event_label = st.selectbox("Séance :", list(dict_events_rep.keys()))
+                sel_event_label = st.selectbox("Séance :", list(dict_events_rep.keys()), key="sel_evt_saisie_man")
                 selected_event_id = dict_events_rep[sel_event_label]
-                sel_q_title = st.selectbox("Questionnaire :", [q["title"] for q in q_list])
+                sel_q_title = st.selectbox("Questionnaire :", [q["title"] for q in q_list], key="sel_q_saisie_man")
                 q_obj = next(q for q in q_list if q["title"] == sel_q_title)
                 rep = obtenir_reponse_evenement(selected_athlete_id, selected_event_id)
                 rendre_formulaire_questionnaire(q_obj, selected_event_id, f"manuel_{selected_athlete_id}", (rep.get("answers") or {}) if rep else {}, athlete_id=selected_athlete_id)
@@ -895,7 +892,7 @@ elif menu == "📊 Mes données":
         st.info("Aucune donnée.")
 
 # =====================================================================
-# PAGE : ANALYTIQUE (avec moyenne équipe et onglets épurés)
+# PAGE : ANALYTIQUE (avec moyenne équipe et 4 onglets par mode)
 # =====================================================================
 elif menu == "📊 Analytique":
     st.header("📊 Analytique")
@@ -906,21 +903,21 @@ elif menu == "📊 Analytique":
     teams_all = supabase.table("teams").select("*").execute().data or []
     dict_teams_an = {t["name"]: t["id"] for t in teams_all}
 
-    mode_analyse = st.radio("Analyser :", ["👤 Un joueur", "👥 Une équipe", "🆚 Comparaison"], horizontal=True)
+    mode_analyse = st.radio("Analyser :", ["👤 Un joueur", "👥 Une équipe", "🆚 Comparaison"], horizontal=True, key="rad_mode_analytique")
     scope_joueurs = []
     is_team_mode = False
 
     if mode_analyse == "👤 Un joueur":
-        j = st.selectbox("Joueur :", sorted(dict_athletes.keys()))
+        j = st.selectbox("Joueur :", sorted(dict_athletes.keys()), key="sel_j_analytique")
         scope_joueurs = [j] if j else []
     elif mode_analyse == "👥 Une équipe":
-        eq = st.selectbox("Équipe :", sorted(dict_teams_an.keys()))
+        eq = st.selectbox("Équipe :", sorted(dict_teams_an.keys()), key="sel_eq_analytique")
         if eq:
             tid = dict_teams_an[eq]
             scope_joueurs = [p.get("full_name") for p in profiles if p.get("team_id") == tid and p.get("full_name")]
             is_team_mode = True
     else:
-        scope_joueurs = st.multiselect("Joueurs :", sorted(dict_athletes.keys()))
+        scope_joueurs = st.multiselect("Joueurs :", sorted(dict_athletes.keys()), key="multisel_cmp_analytique")
 
     if not scope_joueurs:
         st.info("Sélectionnez des joueurs ou une équipe.")
@@ -943,9 +940,9 @@ elif menu == "📊 Analytique":
     if not df_flat.empty:
         df_flat = df_flat[df_flat["Joueur"].isin(scope_joueurs)]
 
-    # Les 5 onglets demandés
-    tab_q, tab_g, tab_comp, tab_gps, tab_brut = st.tabs([
-        "Réponses par question", "Graphique", "Comparaison joueur", "Les données GPS", "Données brutes"
+    # 4 onglets stricts
+    tab_q, tab_g, tab_comp, tab_brut = st.tabs([
+        "Réponses par question", "Graphique", "Comparaison joueur", "Données brutes"
     ])
 
     with tab_q:
@@ -953,8 +950,12 @@ elif menu == "📊 Analytique":
             if is_team_mode:
                 st.markdown("### 👥 Moyenne de l'équipe par question")
                 df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
-                moy_eq = df_num.groupby("Question")["Valeur"].mean().reset_index()
-                st.dataframe(moy_eq, use_container_width=True)
+                if not df_num.empty:
+                    moy_eq = df_num.groupby("Question")["Valeur"].mean().reset_index()
+                    moy_eq.columns = ["Question", "Moyenne Équipe"]
+                    st.dataframe(moy_eq, use_container_width=True)
+                else:
+                    st.info("Pas de données numériques pour calculer la moyenne de l'équipe.")
             else:
                 st.dataframe(df_flat, use_container_width=True)
         else:
@@ -964,69 +965,258 @@ elif menu == "📊 Analytique":
         if not df_flat.empty:
             df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
             if not df_num.empty:
-                q_sel = st.selectbox("Variable :", df_num["Question"].unique())
-                fig = px.line(df_num[df_num["Question"] == q_sel], x="Date", y="Valeur", color="Joueur" if not is_team_mode else None, template="plotly_dark")
+                q_sel = st.selectbox("Variable :", df_num["Question"].unique(), key="sel_var_graph_an")
+                if is_team_mode:
+                    df_moy_t = df_num[df_num["Question"] == q_sel].groupby("Date")["Valeur"].mean().reset_index()
+                    fig = px.line(df_moy_t, x="Date", y="Valeur", markers=True, title=f"Moyenne Équipe — {q_sel}", template="plotly_dark")
+                else:
+                    fig = px.line(df_num[df_num["Question"] == q_sel], x="Date", y="Valeur", color="Joueur", markers=True, template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Pas de données numériques pour le graphique.")
+        else:
+            st.info("Aucune donnée.")
 
     with tab_comp:
         st.markdown("### 🆚 Comparaison inter-joueurs")
         if not df_flat.empty:
             df_num = df_flat[df_flat["Valeur"].apply(lambda x: isinstance(x, (int, float)))]
             if not df_num.empty:
-                q_sel = st.selectbox("Variable à comparer :", df_num["Question"].unique(), key="cmp_q")
-                fig_bar = px.bar(df_num[df_num["Question"] == q_sel], x="Joueur", y="Valeur", color="Joueur", template="plotly_dark")
+                q_sel = st.selectbox("Variable à comparer :", df_num["Question"].unique(), key="cmp_q_an")
+                fig_bar = px.bar(df_num[df_num["Question"] == q_sel], x="Joueur", y="Valeur", color="Joueur", template="plotly_dark", title=f"Comparaison : {q_sel}")
                 st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Pas de valeurs numériques à comparer.")
+        else:
+            st.info("Aucune donnée.")
 
-    with tab_gps:
-        st.markdown("### 🛰️ Données GPS")
+    with tab_brut:
+        st.markdown("### 📋 Données brutes & GPS")
+        if not df_flat.empty:
+            st.dataframe(df_flat, use_container_width=True)
         gps_all = obtenir_rapports_gps()
         gps_rows = [{ "Joueur": dict_profiles.get(g.get("athlete_id")), **{m: g.get(m) for m in COLONNES_GPS_NUMERIQUES} } for g in gps_all]
         df_gps_all = pd.DataFrame(gps_rows) if gps_rows else pd.DataFrame()
         if not df_gps_all.empty and "Joueur" in df_gps_all.columns:
             df_gps_all = df_gps_all[df_gps_all["Joueur"].isin(scope_joueurs)]
             if is_team_mode:
-                st.markdown("#### Moyenne GPS de l'équipe")
+                st.markdown("#### Moyennes GPS de l'équipe")
                 st.dataframe(df_gps_all.mean(numeric_only=True).reset_index(), use_container_width=True)
             else:
+                st.markdown("#### Rapports GPS")
                 st.dataframe(df_gps_all, use_container_width=True)
-        else:
-            st.info("Aucune donnée GPS.")
-
-    with tab_brut:
-        if not df_flat.empty:
-            st.dataframe(df_flat, use_container_width=True)
 
 # =====================================================================
-# PAGE : GESTION DES PROFILS
+# PAGE : GESTION DES PROFILS (Complet d'origine)
 # =====================================================================
 elif menu == "⚙️ Gestion des profils":
     st.header("⚙️ Gestion des Profils, Équipes & Comptes")
     tab_ath, tab_teams, tab_comptes = st.tabs(["👤 Athlètes & Tests", "🛡️ Équipes", "🔑 Comptes"])
 
+    with tab_ath:
+        teams_data = supabase.table("teams").select("*").execute().data or []
+        dict_teams_add = {t["name"]: t["id"] for t in teams_data}
+        st.subheader("✏️ Modifier / Supprimer un athlète existant")
+        ath_data = supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []
+        dict_ath_lookup = {a.get("full_name", f"Athlète {a['id']}"): a for a in ath_data}
+
+        if dict_ath_lookup:
+            selected_ath_name = st.selectbox("Sélectionner un athlète :", list(dict_ath_lookup.keys()), key="sel_ath_mgt_prof")
+            selected_ath = dict_ath_lookup[selected_ath_name]
+            ath_id = selected_ath["id"]
+
+            c_mod1, c_mod2 = st.columns(2)
+            with c_mod1:
+                upd_name = st.text_input("Nom & Prénom", value=selected_ath.get("full_name", ""), key=f"ath_name_{ath_id}")
+            with c_mod2:
+                current_team_id = selected_ath.get("team_id")
+                current_team_name = next((tname for tname, tid in dict_teams_add.items() if tid == current_team_id), "Aucune")
+                team_idx = (["Aucune"] + list(dict_teams_add.keys())).index(current_team_name) if current_team_name in dict_teams_add else 0
+                upd_team = st.selectbox("Changer d'équipe", ["Aucune"] + list(dict_teams_add.keys()), index=team_idx, key=f"ath_team_select_{ath_id}")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("💾 Mettre à jour le profil", key=f"upd_p_{ath_id}"):
+                    new_t_id = dict_teams_add[upd_team] if upd_team != "Aucune" else None
+                    supabase.table("profiles").update({"full_name": upd_name, "team_id": new_t_id}).eq("id", ath_id).execute()
+                    st.success("Profil mis à jour !")
+                    st.rerun()
+            with c2:
+                if st.button("❌ Supprimer définitivement l'athlète", type="primary", key=f"del_p_{ath_id}"):
+                    ok, msg = supprimer_compte(ath_id)
+                    if ok:
+                        st.success("Athlète et compte supprimés !")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            st.markdown("---")
+            st.subheader(f"🏃 Tests Physiques de {upd_name}")
+            tests_db = supabase.table("physical_tests").select("*").eq("athlete_id", ath_id).order("created_at", desc=True).execute().data or []
+            if tests_db:
+                for t in tests_db:
+                    t_id = t["id"]
+                    col_t1, col_t2, col_t3, col_t4, col_t5 = st.columns([3, 2, 2, 2, 2])
+                    with col_t1: new_t_name = st.text_input("Test", value=t.get("test_name", ""), key=f"t_name_{t_id}")
+                    with col_t2: new_t_val = st.number_input("Valeur", value=float(t.get("test_value", 0.0)), key=f"t_val_{t_id}")
+                    with col_t3: new_t_unit = st.text_input("Unité", value=t.get("unit", ""), key=f"t_unit_{t_id}")
+                    with col_t4:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("💾", key=f"save_t_{t_id}"):
+                            supabase.table("physical_tests").update({"test_name": new_t_name, "test_value": new_t_val, "unit": new_t_unit}).eq("id", t_id).execute()
+                            st.rerun()
+                    with col_t5:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("❌", key=f"del_t_{t_id}"):
+                            supabase.table("physical_tests").delete().eq("id", t_id).execute()
+                            st.rerun()
+
+            st.markdown("#### Ajouter un test")
+            col_add1, col_add2, col_add3 = st.columns(3)
+            with col_add1: t_name = st.text_input("Nom", key=f"add_tn_{ath_id}")
+            with col_add2: t_val = st.number_input("Résultat", value=0.0, key=f"add_tv_{ath_id}")
+            with col_add3: t_unit = st.text_input("Unité", value="km/h", key=f"add_tu_{ath_id}")
+            if st.button("Enregistrer le test", key=f"btn_add_t_{ath_id}"):
+                if t_name:
+                    supabase.table("physical_tests").insert({"athlete_id": ath_id, "test_name": t_name, "test_value": t_val, "unit": t_unit}).execute()
+                    st.rerun()
+        else:
+            st.info("Aucun athlète.")
+
     with tab_teams:
-        st.subheader("Créer une équipe")
-        new_t = st.text_input("Nom de l'équipe")
-        if st.button("Créer"):
+        st.subheader("➕ Créer une équipe")
+        new_t = st.text_input("Nom de la nouvelle équipe", key="input_create_team_mgt")
+        if st.button("Créer l'équipe", type="primary"):
             if new_t:
                 creer_equipe(new_t)
                 st.success("Équipe créée !")
                 st.rerun()
 
+        teams_list = supabase.table("teams").select("*").execute().data or []
+        if teams_list:
+            st.markdown("---")
+            dict_teams_mgt = {t["name"]: t for t in teams_list}
+            sel_t_mgt = st.selectbox("Gérer l'équipe :", list(dict_teams_mgt.keys()), key="sel_team_mgt_box")
+            t_obj = dict_teams_mgt[sel_t_mgt]
+            if st.button("❌ Supprimer cette équipe", key=f"del_eq_{t_obj['id']}"):
+                supprimer_equipe(t_obj["id"])
+                st.success("Équipe supprimée.")
+                st.rerun()
+
     with tab_comptes:
-        st.subheader("Créer un compte")
-        with st.form("fc"):
-            em = st.text_input("E-mail")
-            pw = st.text_input("Mot de passe", type="password")
-            fn = st.text_input("Nom complet")
-            rl = st.selectbox("Rôle", ["athlete", "coach"])
-            if st.form_submit_button("Créer"):
-                ok, msg = creer_compte(em, pw, fn, rl)
-                if ok: st.success(msg); st.rerun()
-                else: st.error(msg)
+        st.subheader("🔑 Créer un compte")
+        with st.form("form_creer_compte_mgt"):
+            c1, c2 = st.columns(2)
+            with c1:
+                new_email = st.text_input("E-mail")
+                new_password = st.text_input("Mot de passe", type="password")
+                new_role = st.selectbox("Rôle", ["athlete", "coach"])
+            with c2:
+                new_full_name = st.text_input("Nom complet")
+                new_team = st.selectbox("Équipe", ["Aucune"] + list(teams_data) if teams_data else ["Aucune"])
+
+            if st.form_submit_button("🚀 Créer le compte", type="primary"):
+                if new_email and new_password and new_full_name:
+                    t_id = next((t["id"] for t in teams_data if t["name"] == new_team), None) if new_team != "Aucune" else None
+                    ok, msg = creer_compte(new_email, new_password, new_full_name, new_role, t_id)
+                    if ok: st.success(msg); st.rerun()
+                    else: st.error(msg)
 
 # =====================================================================
-# PAGE : GÉNÉRATEUR DE BIPS AUDIO
+# PAGE : GÉNÉRATEUR DE BIPS AUDIO (Intégral d'origine)
 # =====================================================================
 elif menu == "🔊 Générateur de Bips Audio":
-    st.header("🔊 Générateur de Bips Audio")
-    st.write("Outil de génération de bandes sonores pour tests VMA.")
+    import wave
+    import math
+    import struct
+    import io
+
+    st.header("🔊 Générateur de Bips Audio (Tests VMA & Pacing)")
+    st.write("Créez sur-mesure des bandes sonores rythmées par des bips haute intensité pour vos tests de terrain.")
+
+    def generate_beep_audio(interval_mode, base_interval, min_interval, total_beps, accel_trigger, accel_value, step_decrement, bip_freq=1800, bip_duration=0.2, wave_type="Carrée (Buzzer Puissant / VMEVAL)"):
+        sample_rate = 88200
+        audio_frames = bytearray()
+
+        def create_wave(freq, duration_sec, w_type):
+            num_samples = int(sample_rate * duration_sec)
+            frames = bytearray()
+            fade_len = int(sample_rate * 0.002)
+
+            for i in range(num_samples):
+                envelope = 1.0
+                if i < fade_len: envelope = i / fade_len
+                elif i > num_samples - fade_len: envelope = (num_samples - i) / fade_len
+
+                sin_val = math.sin(2 * math.pi * freq * i / sample_rate)
+                raw_signal = 1.0 if ("Carrée" in w_type and sin_val >= 0) else (-1.0 if "Carrée" in w_type else sin_val)
+                value = int(32767 * 0.98 * envelope * raw_signal)
+                frames.extend(struct.pack('<h', value))
+            return frames
+
+        def create_silence(duration_sec):
+            return bytearray(struct.pack('<h', 0) * int(sample_rate * duration_sec))
+
+        current_interval = float(base_interval)
+        elapsed_time = 0.0
+
+        for b in range(1, total_beps + 1):
+            is_accel_step = False
+            if interval_mode == "Progressif / Accéléré" and b > 1:
+                if accel_trigger == "Tous les X bips" and (b - 1) % int(accel_value) == 0: is_accel_step = True
+                elif accel_trigger == "Toutes les X secondes" and elapsed_time >= accel_value:
+                    is_accel_step = True
+                    elapsed_time = 0.0
+                if is_accel_step:
+                    current_interval = max(float(min_interval), current_interval - float(step_decrement))
+
+            if is_accel_step:
+                beep_wave = create_wave(2400, bip_duration * 0.6, wave_type) + create_silence(0.04) + create_wave(2400, bip_duration, wave_type)
+                used_bip_dur = (bip_duration * 1.6) + 0.04
+            else:
+                beep_wave = create_wave(bip_freq, bip_duration, wave_type)
+                used_bip_dur = bip_duration
+
+            audio_frames.extend(beep_wave)
+            audio_frames.extend(create_silence(max(0.0, current_interval - used_bip_dur)))
+            elapsed_time += current_interval
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(audio_frames)
+        return wav_buffer.getvalue()
+
+    col_cfg1, col_cfg2 = st.columns(2)
+    with col_cfg1:
+        st.subheader("⚙️ Rythme & Structure")
+        mode = st.radio("Type de test :", ["Constant (Intervalle fixe)", "Progressif / Accéléré"], key="audio_mode_gen")
+        base_int = st.number_input("Intervalle de départ entre chaque bip (secondes) :", min_value=0.5, max_value=120.0, value=5.0, step=0.5, key="num_base_int")
+        total_beps = st.number_input("Nombre total de bips à générer :", min_value=2, max_value=500, value=30, step=1, key="num_tot_bips")
+
+    with col_cfg2:
+        st.subheader("🔊 Timbre & Puissance du Bip")
+        wave_type = st.selectbox("Type de son :", ["Carrée (Buzzer Puissant / VMEVAL)", "Sinusoïdale (Bip classique)"], key="sel_wave_type")
+        bip_duration = st.slider("Durée du bip sonore (secondes) :", min_value=0.05, max_value=2.0, value=0.25, step=0.05, key="slider_bip_dur")
+        bip_freq = st.slider("Hauteur du son / Fréquence (Hz) :", min_value=600, max_value=3500, value=2000, step=100, key="slider_bip_freq")
+
+    st.markdown("---")
+    if mode == "Progressif / Accéléré":
+        st.subheader("🚀 Paramètres d'accélération")
+        ca1, ca2, ca3, ca4 = st.columns(4)
+        with ca1: accel_trigger = st.selectbox("Déclencheur :", ["Tous les X bips", "Toutes les X secondes"], key="sel_accel_trig")
+        with ca2: accel_val = st.number_input("N :", min_value=1, max_value=600, value=5, key="num_accel_val")
+        with ca3: step_decrement = st.number_input("Réduction (sec) :", min_value=0.1, max_value=10.0, value=0.5, step=0.1, key="num_step_dec")
+        with ca4: min_int = st.number_input("Minimum (sec) :", min_value=0.2, max_value=30.0, value=1.0, step=0.1, key="num_min_int")
+    else:
+        accel_trigger, accel_val, step_decrement, min_int = "Tous les X bips", 1, 0.0, base_int
+
+    st.markdown("---")
+    if st.button("🎵 Générer la bande sonore", type="primary", use_container_width=True, key="btn_gen_audio_file"):
+        with st.spinner("Génération du son en cours..."):
+            audio_data = generate_beep_audio(mode, base_int, min_int, total_beps, accel_trigger, accel_val, step_decrement, bip_freq, bip_duration, wave_type)
+            st.success("✅ Fichier sonore généré !")
+            st.audio(audio_data, format="audio/wav")
+            st.download_button("💾 Télécharger (.WAV)", data=audio_data, file_name="test_bips.wav", mime="audio/wav", use_container_width=True, key="dl_wav_audio")
