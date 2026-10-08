@@ -41,6 +41,9 @@ from sports_analytics import (
     enregistrer_rapport_gps,
     obtenir_rapports_gps,
     COLONNES_GPS_NUMERIQUES,
+    obtenir_reponses_athlete,
+    obtenir_ou_creer_rpe_auto,
+    LABEL_RPE_AUTO,
 )
 
 NOMS_METRIQUES_GPS = {
@@ -301,6 +304,7 @@ def rendre_formulaire_questionnaire(q_obj, event_id, key_suffix, reponses_deja=N
     reponses_deja = reponses_deja or {}
     answers_dict = {}
     rpe_val = None
+    valeurs_manquantes = []
     with st.form(f"form_{key_suffix}"):
         for idx, q in enumerate(q_obj.get("questions", [])):
             lbl = q.get("label", f"Question {idx + 1}")
@@ -310,14 +314,18 @@ def rendre_formulaire_questionnaire(q_obj, event_id, key_suffix, reponses_deja=N
             if fmt == "scale":
                 scale_max = int(q.get("scale_max", 5))
                 options = list(range(1, scale_max + 1))
+                est_rpe = "rpe" in lbl.lower()
                 try:
-                    idx_defaut = options.index(int(float(valeur_existante))) if valeur_existante not in (None, "") else 0
+                    idx_defaut = options.index(int(float(valeur_existante))) if valeur_existante not in (None, "") else (None if est_rpe else 0)
                 except (ValueError, TypeError):
-                    idx_defaut = 0
-                ans = st.selectbox(f"{lbl} (1-{scale_max})", options, index=idx_defaut, key=f"{key_suffix}_{idx}")
-                answers_dict[lbl] = float(ans)
-                if "rpe" in lbl.lower():
-                    rpe_val = float(ans)
+                    idx_defaut = None if est_rpe else 0
+                ans = st.selectbox(f"{lbl} (1-{scale_max})", options, index=idx_defaut, key=f"{key_suffix}_{idx}", placeholder="Choisis une valeur")
+                if ans is None:
+                    valeurs_manquantes.append(lbl)
+                else:
+                    answers_dict[lbl] = float(ans)
+                    if est_rpe:
+                        rpe_val = float(ans)
             elif fmt == "number":
                 try:
                     val_defaut = float(valeur_existante) if valeur_existante not in (None, "") else 0.0
@@ -335,13 +343,30 @@ def rendre_formulaire_questionnaire(q_obj, event_id, key_suffix, reponses_deja=N
 
         libelle_bouton = "💾 Mettre à jour" if reponses_deja else "🚀 Envoyer"
         if st.form_submit_button(libelle_bouton, type="primary"):
-            ok, err = enregistrer_reponse_evenement(cible_id, event_id, q_obj["id"], answers_dict, rpe_val)
-            if ok:
+            if valeurs_manquantes:
+                st.error("Choisis une valeur pour : " + ", ".join(valeurs_manquantes))
+                ok, err = False, None
+            else:
+                ok, err = enregistrer_reponse_evenement(cible_id, event_id, q_obj["id"], answers_dict, rpe_val)
+            if valeurs_manquantes:
+                pass
+            elif ok:
                 st.session_state.pop("cache_statuts_dispo", None)
                 st.success("Réponses enregistrées !")
                 st.rerun()
             else:
                 st.error(f"Erreur lors de l'enregistrement : {err}")
+
+MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+
+def maintenant_local():
+    """Heure actuelle en France (le serveur Streamlit tourne en UTC : sans ça, l'ouverture des questionnaires serait décalée de 1 à 2 h)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
 
 def _parser_datetime_event(ev, champ="start_time"):
     try:
@@ -435,7 +460,7 @@ if menu == "📅 Planning & Séances":
         st.success("Aucune alerte musculaire ou wellness critique récente.")
 
     st.markdown("---")
-    tab_nouvelle, tab_existantes = st.tabs(["🆕 Planifier une nouvelle séance", "📋 Séances planifiées (modifier / supprimer)"])
+    tab_nouvelle, tab_existantes, tab_rpe = st.tabs(["🆕 Planifier une nouvelle séance", "📋 Séances planifiées (modifier / supprimer)", "🚫 RPE obligatoire"])
 
     with tab_nouvelle:
         def label_avec_statut(nom):
@@ -659,6 +684,66 @@ if menu == "📅 Planning & Séances":
                     if st.button("✖ Fermer", key=f"close_ev_{ev_id}"):
                         st.session_state.cal_event_selectionne = None
                         st.rerun()
+
+    with tab_rpe:
+        st.subheader("🚫 RPE obligatoire après la séance")
+        st.caption(
+            "Par défaut, chaque athlète doit remplir son RPE (1-10) après chaque séance, dans l'heure qui suit. "
+            "Ici, vous pouvez retirer cette obligation pour un athlète sur une ou plusieurs séances, "
+            "ou pour tous les joueurs d'une séance. Vous pouvez aussi la remettre."
+        )
+        if st.session_state.get("flash_rpe"):
+            st.success(st.session_state.pop("flash_rpe"))
+
+        mode_rpe = st.radio("Retirer le RPE pour :", ["👤 Un athlète (une ou plusieurs séances)", "👥 Une séance entière (tous les joueurs)"],
+                            horizontal=True, key="rpe_mode_radio")
+        evs_rpe = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
+        inv_rpe = {v: k for k, v in dict_athletes.items()}
+
+        def _lib_ev(e):
+            d = (e.get("start_time") or "")[:16].replace("T", " ")
+            return f"{e.get('title', 'Séance')} — {d}" + ("  🚫 RPE retiré" if e.get("rpe_desactive") else "")
+
+        ids_cibles = []
+        if not dict_athletes or not evs_rpe:
+            st.info("Aucune séance planifiée pour le moment.")
+        elif mode_rpe.startswith("👤"):
+            nom_rpe = st.selectbox("Athlète :", sorted(dict_athletes.keys()), key="rpe_sel_athlete")
+            evs_ath = [e for e in evs_rpe if e.get("athlete_id") == dict_athletes[nom_rpe]]
+            par_id = {e["id"]: e for e in evs_ath}
+            ids_cibles = st.multiselect("Séance(s) concernée(s) :", list(par_id.keys()), format_func=lambda i: _lib_ev(par_id[i]), key="rpe_sel_events_ath")
+        else:
+            groupes_rpe = {}
+            for e in evs_rpe:
+                groupes_rpe.setdefault((e.get("title"), e.get("start_time")), []).append(e)
+            cles = st.multiselect(
+                "Séance(s) concernée(s) :", list(groupes_rpe.keys()),
+                format_func=lambda k: f"{k[0]} — {(k[1] or '')[:16].replace('T', ' ')} ({len(groupes_rpe[k])} joueur(s))",
+                key="rpe_sel_events_groupe"
+            )
+            ids_cibles = [e["id"] for k in cles for e in groupes_rpe[k]]
+
+        c_r1, c_r2 = st.columns(2)
+        for colonne, valeur, libelle, message in [
+            (c_r1, True, "🚫 Retirer le RPE obligatoire", "RPE retiré pour {n} séance(s)."),
+            (c_r2, False, "✅ Remettre le RPE obligatoire", "RPE remis pour {n} séance(s)."),
+        ]:
+            with colonne:
+                if st.button(libelle, key=f"btn_rpe_{valeur}", disabled=not ids_cibles, type="primary" if valeur else "secondary"):
+                    try:
+                        supabase.table("events").update({"rpe_desactive": valeur}).in_("id", ids_cibles).execute()
+                        st.session_state["flash_rpe"] = message.format(n=len(ids_cibles))
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Impossible d'enregistrer : {ex}")
+                        st.info("Si l'erreur parle d'une colonne « rpe_desactive » inconnue, exécutez une fois ceci dans Supabase (SQL Editor) puis réessayez :")
+                        st.code("alter table events add column if not exists rpe_desactive boolean default false;", language="sql")
+
+        retires = [e for e in evs_rpe if e.get("rpe_desactive")]
+        if retires:
+            st.markdown("#### Séances dont le RPE est retiré")
+            st.dataframe(pd.DataFrame([{"Athlète": inv_rpe.get(e.get("athlete_id"), "?"), "Séance": e.get("title"), "Date": (e.get("start_time") or "")[:16].replace("T", " ")} for e in retires]),
+                         use_container_width=True)
 
 # =====================================================================
 # PAGE : FICHIERS & RAPPORTS GPS
@@ -968,70 +1053,346 @@ elif menu == "📝 Questionnaires":
 # PAGE (ATHLÈTE) : SÉANCES À VENIR
 # =====================================================================
 elif menu == "📅 Séances à venir":
-    st.header("📅 Mes séances à venir")
-    maintenant = datetime.now()
-    events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
-    a_venir = [e for e in events_mine_raw if _parser_datetime_event(e) and _parser_datetime_event(e).date() >= maintenant.date()]
-    a_venir.sort(key=lambda e: e["start_time"])
+    st.header("📅 Mes séances")
+    maintenant = maintenant_local()
+    st.caption(
+        "🌅 Le wellness s'ouvre avant la séance (selon le délai fixé par ton coach) et se ferme au début de la séance. "
+        "🌙 Le RPE s'ouvre à la fin de la séance : remplis-le dans l'heure qui suit. Une séance reste ici tant que son RPE n'est pas rempli."
+    )
 
+    events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
     q_all = supabase.table("questionnaires").select("*").execute().data or []
     q_pre = [q for q in q_all if q.get("type") == "pre_event"]
-    q_post = [q for q in q_all if q.get("type") != "pre_event"]
+    q_auto = obtenir_ou_creer_rpe_auto()
+    q_post_perso = [q for q in q_all if q.get("type") != "pre_event" and not (q_auto and q.get("id") == q_auto.get("id"))]
     assignations = obtenir_assignations()
 
-    if not a_venir:
-        st.info("Aucune séance à venir.")
-    else:
-        for i, ev in enumerate(a_venir):
-            dt_start = _parser_datetime_event(ev)
-            with st.expander(f"🏋️ {ev.get('title')} — {dt_start.strftime('%d/%m/%Y à %H:%M')}", expanded=(i == 0)):
-                afficher_fichiers_evenement(ev["id"], key_prefix=f"av_{ev['id']}")
-                rep = obtenir_reponse_evenement(mon_id, ev["id"])
-                reponses_deja = (rep.get("answers") or {}) if rep else {}
+    # Réponses déjà données, regroupées par séance (tous questionnaires fusionnés)
+    reponses_par_event = {}
+    for r in obtenir_reponses_athlete(mon_id):
+        ans = r.get("answers") or {}
+        if isinstance(ans, str):
+            try:
+                ans = json.loads(ans)
+            except Exception:
+                ans = {}
+        if isinstance(ans, dict):
+            reponses_par_event.setdefault(r.get("event_id"), {}).update(ans)
 
-                st.markdown("##### 🌅 Avant la séance")
-                for q in q_pre:
-                    if questionnaire_disponible_pour(q["id"], mon_id, ev["id"], assignations):
-                        rendre_formulaire_questionnaire(q, ev["id"], f"pre_{ev['id']}_{q['id']}", reponses_deja)
+    def rpe_deja_rempli(ev_id):
+        return any("rpe" in str(k).lower() and v not in (None, "") for k, v in reponses_par_event.get(ev_id, {}).items())
 
-                st.markdown("##### 🌙 Après la séance (RPE)")
-                for q in q_post:
+    rpe_en_attente, a_venir = [], []
+    for ev in events_mine_raw:
+        d0 = _parser_datetime_event(ev)
+        if not d0:
+            continue
+        d1 = _parser_datetime_event(ev, "end_time") or d0
+        if d1 < d0:
+            d1 = d0
+        rpe_requis = bool(q_auto) and not ev.get("rpe_desactive")
+        if maintenant >= d1:
+            # Séance terminée : elle reste affichée (7 jours max) tant que le RPE obligatoire n'est pas rempli
+            if rpe_requis and not rpe_deja_rempli(ev["id"]) and d1 >= maintenant - timedelta(days=7):
+                rpe_en_attente.append((ev, d0, d1, rpe_requis))
+        else:
+            a_venir.append((ev, d0, d1, rpe_requis))
+    rpe_en_attente.sort(key=lambda t: t[1])
+    a_venir.sort(key=lambda t: t[1])
+
+    def bloc_seance(ev, d0, d1, rpe_requis, ouvert):
+        emoji = "⚔️" if ev.get("event_type") == "match" else "🏋️"
+        titre = f"{emoji} {ev.get('title', 'Séance')} — {d0.strftime('%d/%m/%Y à %H:%M')}"
+        if d0.date() == maintenant.date():
+            titre += "  🔴 Aujourd'hui"
+        with st.expander(titre, expanded=ouvert):
+            if ev.get("location"):
+                st.caption(f"📍 {ev['location']}")
+            afficher_fichiers_evenement(ev["id"], key_prefix=f"av_{ev['id']}")
+            reponses_deja = reponses_par_event.get(ev["id"], {})
+
+            # ---- Wellness : uniquement dans la fenêtre [début - délai ; début[ ----
+            st.markdown("##### 🌅 Avant la séance — Wellness")
+            q_pre_dispo = [q for q in q_pre if questionnaire_disponible_pour(q["id"], mon_id, ev["id"], assignations)]
+            if not q_pre_dispo:
+                st.caption("Aucun questionnaire wellness pour cette séance.")
+            for q in q_pre_dispo:
+                minutes_avant = int(q.get("trigger_minutes") or 60)
+                ouverture = d0 - timedelta(minutes=minutes_avant)
+                deja_repondu = any(qq.get("label") in reponses_deja for qq in (q.get("questions") or []))
+                if maintenant < ouverture:
+                    st.info(f"🔒 « {q.get('title')} » s'ouvrira à {ouverture.strftime('%H:%M')} ({minutes_avant} min avant la séance, le {ouverture.strftime('%d/%m')}).")
+                elif maintenant >= d0:
+                    st.caption("✅ Wellness déjà rempli." if deja_repondu else f"⏱️ « {q.get('title')} » : fenêtre terminée (la séance a commencé).")
+                else:
+                    st.success(f"🟢 « {q.get('title')} » est ouvert jusqu'à {d0.strftime('%H:%M')}.")
+                    rendre_formulaire_questionnaire(q, ev["id"], f"pre_{ev['id']}_{q['id']}", reponses_deja)
+
+            # ---- RPE : à partir de la fin de la séance ----
+            st.markdown("##### 🌙 Après la séance — RPE")
+            if maintenant < d1:
+                if rpe_requis:
+                    st.info(f"🔒 Le RPE s'ouvrira à la fin de la séance ({d1.strftime('%H:%M')}). Tu devras le remplir dans l'heure qui suit.")
+                else:
+                    st.caption("Pas de RPE demandé pour cette séance.")
+            else:
+                if q_auto and rpe_requis:
+                    limite = d1 + timedelta(hours=1)
+                    if maintenant <= limite:
+                        st.warning(f"⏳ RPE à remplir avant {limite.strftime('%H:%M')}.")
+                    else:
+                        st.error("⏰ RPE en retard : remplis-le maintenant, ton coach attend cette information.")
+                    rendre_formulaire_questionnaire(q_auto, ev["id"], f"rpe_{ev['id']}_{q_auto['id']}", reponses_deja)
+                for q in q_post_perso:
                     rendre_formulaire_questionnaire(q, ev["id"], f"post_{ev['id']}_{q['id']}", reponses_deja)
 
-# =====================================================================
-# PAGE (ATHLÈTE) : CALENDRIER
-# =====================================================================
-elif menu == "📆 Calendrier":
-    st.header("📆 Calendrier")
-    events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
-    for ev in events_mine_raw:
-        st.write(f"• **{ev.get('title')}** ({ev.get('start_time','')[:10]})")
+    if not rpe_en_attente and not a_venir:
+        st.info("Aucune séance à venir et aucun RPE en attente. 👌")
+    if rpe_en_attente:
+        st.markdown("### 🔴 RPE à remplir")
+        for ev, d0, d1, rr in rpe_en_attente:
+            bloc_seance(ev, d0, d1, rr, True)
+    if a_venir:
+        st.markdown("### 📅 À venir")
+        for i, (ev, d0, d1, rr) in enumerate(a_venir):
+            bloc_seance(ev, d0, d1, rr, i == 0 and not rpe_en_attente)
 
 # =====================================================================
-# PAGE (ATHLÈTE) : MES DONNÉES
+# PAGE (ATHLÈTE) : CALENDRIER (vue mensuelle + vue annuelle)
+# =====================================================================
+elif menu == "📆 Calendrier":
+    import calendar as _calendar
+    import html as _html
+
+    st.header("📆 Calendrier")
+    aujourdhui = maintenant_local().date()
+    events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
+    events_par_jour = {}
+    for ev in events_mine_raw:
+        d = _parser_datetime_event(ev)
+        if d:
+            events_par_jour.setdefault(d.date(), []).append(ev)
+    for lst in events_par_jour.values():
+        lst.sort(key=lambda e: e.get("start_time") or "")
+
+    if "ath_cal_ref" not in st.session_state:
+        st.session_state.ath_cal_ref = aujourdhui.replace(day=1)
+    if "ath_cal_vue" not in st.session_state:
+        st.session_state.ath_cal_vue = "🗓️ Mois"
+    if "ath_cal_event" not in st.session_state:
+        st.session_state.ath_cal_event = None
+
+    def _decaler_mois(delta):
+        ref = st.session_state.ath_cal_ref
+        m = ref.month - 1 + delta
+        st.session_state.ath_cal_ref = ref.replace(year=ref.year + m // 12, month=m % 12 + 1, day=1)
+
+    def _decaler_annee(delta):
+        ref = st.session_state.ath_cal_ref
+        st.session_state.ath_cal_ref = ref.replace(year=ref.year + delta, day=1)
+
+    def _ouvrir_mois(annee, mois):
+        st.session_state.ath_cal_ref = datetime(annee, mois, 1).date()
+        st.session_state.ath_cal_vue = "🗓️ Mois"
+        st.session_state.ath_cal_event = None
+
+    st.radio("Vue :", ["🗓️ Mois", "📆 Année"], horizontal=True, key="ath_cal_vue")
+    ref = st.session_state.ath_cal_ref
+
+    if st.session_state.ath_cal_vue == "📆 Année":
+        # ----------------- VUE ANNUELLE -----------------
+        c1, c2, c3 = st.columns([1, 3, 1])
+        c1.button("◀ Année précédente", use_container_width=True, key="ath_an_prev", on_click=_decaler_annee, args=(-1,))
+        c2.markdown(f"<h3 style='text-align:center;'>📆 {ref.year}</h3>", unsafe_allow_html=True)
+        c3.button("Année suivante ▶", use_container_width=True, key="ath_an_next", on_click=_decaler_annee, args=(1,))
+
+        def html_mini_mois(annee, mois):
+            h = ("<div style='background:#131a2b;border:1px solid #263049;border-radius:12px;padding:8px 10px;margin-bottom:6px;'>"
+                 f"<div style='font-family:Sora,sans-serif;font-weight:700;margin-bottom:4px;'>{MOIS_FR[mois - 1].capitalize()}</div>"
+                 "<table style='width:100%;border-collapse:separate;border-spacing:2px;text-align:center;font-size:0.8em;'><tr>")
+            h += "".join(f"<th style='color:#93a0bd;font-weight:600;'>{j[0]}</th>" for j in JOURS_FR) + "</tr>"
+            for semaine in _calendar.monthcalendar(annee, mois):
+                h += "<tr>"
+                for j in semaine:
+                    if j == 0:
+                        h += "<td></td>"
+                        continue
+                    d = datetime(annee, mois, j).date()
+                    evs = events_par_jour.get(d, [])
+                    style, titre = "padding:3px 0;border-radius:6px;color:#f1f5f9;", ""
+                    if evs:
+                        est_match = any(e.get("event_type") == "match" for e in evs)
+                        style += f"background:{'#ef4444' if est_match else '#ff5a1f'};color:#0a0e1a;font-weight:700;"
+                        titre = " title='" + _html.escape(" | ".join(str(e.get("title", "Séance")) for e in evs), quote=True) + "'"
+                    if d == aujourdhui:
+                        style += "outline:2px solid #22d3ee;"
+                    h += f"<td{titre} style='{style}'>{j}</td>"
+                h += "</tr>"
+            return h + "</table></div>"
+
+        st.caption("🟧 entraînement · 🟥 match · contour bleu = aujourd'hui. Clique sur « Ouvrir » pour voir le détail d'un mois.")
+        for ligne in range(4):
+            cols = st.columns(3)
+            for k, col in enumerate(cols):
+                mois = ligne * 3 + k + 1
+                with col:
+                    st.markdown(html_mini_mois(ref.year, mois), unsafe_allow_html=True)
+                    nb = sum(len(v) for d, v in events_par_jour.items() if d.year == ref.year and d.month == mois)
+                    st.button(f"Ouvrir {MOIS_FR[mois - 1]} ({nb} séance{'s' if nb > 1 else ''})", key=f"ath_open_{ref.year}_{mois}",
+                              use_container_width=True, on_click=_ouvrir_mois, args=(ref.year, mois))
+    else:
+        # ----------------- VUE MENSUELLE -----------------
+        c1, c2, c3 = st.columns([1, 3, 1])
+        c1.button("◀ Mois précédent", use_container_width=True, key="ath_cal_prev", on_click=_decaler_mois, args=(-1,))
+        c2.markdown(f"<h4 style='text-align:center;'>📅 {MOIS_FR[ref.month - 1].capitalize()} {ref.year}</h4>", unsafe_allow_html=True)
+        c3.button("Mois suivant ▶", use_container_width=True, key="ath_cal_next", on_click=_decaler_mois, args=(1,))
+
+        for c, jl in zip(st.columns(7), JOURS_FR):
+            c.markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:600;'>{jl}</div>", unsafe_allow_html=True)
+
+        for semaine in _calendar.monthcalendar(ref.year, ref.month):
+            for c, jour_num in zip(st.columns(7), semaine):
+                if jour_num == 0:
+                    c.markdown("&nbsp;", unsafe_allow_html=True)
+                    continue
+                date_cell = datetime(ref.year, ref.month, jour_num).date()
+                style_jour = "color:#38bdf8; font-weight:800;" if date_cell == aujourdhui else "color:#f1f5f9; font-weight:600;"
+                c.markdown(f"<div style='{style_jour}'>{jour_num}</div>", unsafe_allow_html=True)
+                evs_jour = events_par_jour.get(date_cell, [])
+                for ev in evs_jour[:4]:
+                    emoji_type = "⚔️" if ev.get("event_type") == "match" else "🏋️"
+                    if c.button(f"{emoji_type} {ev.get('title', 'Séance')[:10]}", key=f"ath_cal_btn_{ev['id']}", help=str(ev.get("title")), use_container_width=True):
+                        st.session_state.ath_cal_event = ev["id"]
+                        st.rerun()
+                if len(evs_jour) > 4:
+                    c.caption(f"+{len(evs_jour) - 4} autre(s)")
+
+        st.markdown("---")
+        ev_sel = next((e for e in events_mine_raw if e["id"] == st.session_state.ath_cal_event), None)
+        if not ev_sel:
+            st.info("👆 Clique sur une séance pour voir son détail (documents, tes réponses, ton rapport GPS).")
+        else:
+            d0 = _parser_datetime_event(ev_sel)
+            d1 = _parser_datetime_event(ev_sel, "end_time")
+            horaire = d0.strftime("%d/%m/%Y à %H:%M") + (f" → {d1.strftime('%H:%M')}" if d1 else "") if d0 else ""
+            st.subheader(f"{ev_sel.get('title', 'Séance')} — {horaire}")
+            if ev_sel.get("location"):
+                st.caption(f"📍 {ev_sel['location']}")
+            afficher_fichiers_evenement(ev_sel["id"], key_prefix=f"cal_{ev_sel['id']}")
+
+            rep = obtenir_reponse_evenement(mon_id, ev_sel["id"])
+            reponses_deja = (rep.get("answers") or {}) if rep else {}
+            st.markdown("##### 📝 Mes réponses pour cette séance")
+            if reponses_deja:
+                cols_rep = st.columns(min(len(reponses_deja), 4) or 1)
+                for idx, (question, valeur) in enumerate(reponses_deja.items()):
+                    with cols_rep[idx % 4]:
+                        st.metric(label=str(question), value=str(valeur))
+            else:
+                st.caption("Aucune réponse donnée pour cette séance.")
+
+            gps_ev = obtenir_rapports_gps(athlete_id=mon_id, event_id=ev_sel["id"])
+            if gps_ev:
+                st.markdown("---")
+                st.markdown("##### 🛰️ Mon rapport GPS pour cette séance")
+                g = gps_ev[0]
+                metriques = [m for m in COLONNES_GPS_NUMERIQUES if g.get(m) is not None]
+                for debut_m in range(0, len(metriques), 3):
+                    cols_g = st.columns(3)
+                    for col_g, m in zip(cols_g, metriques[debut_m:debut_m + 3]):
+                        v = g.get(m)
+                        if m == "duree_secondes":
+                            h_, reste = divmod(int(v), 3600)
+                            texte = f"{h_}:{reste // 60:02d}:{reste % 60:02d}"
+                        else:
+                            texte = f"{v:g}"
+                        col_g.metric(NOMS_METRIQUES_GPS.get(m, m), texte)
+
+            if st.button("✖ Fermer le détail", key="ath_cal_close"):
+                st.session_state.ath_cal_event = None
+                st.rerun()
+
+# =====================================================================
+# PAGE (ATHLÈTE) : MES DONNÉES (même analytique que le coach, pour un seul joueur)
 # =====================================================================
 elif menu == "📊 Mes données":
     st.header("📊 Mes données")
-    res_resp = supabase.table("questionnaire_responses").select("*").eq("athlete_id", mon_id).execute().data or []
+    nom_moi = profil_connecte.get("full_name") or "Moi"
+
     records_flat = []
-    for r in res_resp:
+    for r in obtenir_reponses_athlete(mon_id):
         ans = r.get("answers", {})
         if isinstance(ans, str):
-            try: ans = json.loads(ans)
-            except: ans = {}
-        for k, v in ans.items():
-            records_flat.append({"Question": str(k), "Valeur": str(v), "Date": r.get("submitted_at","")[:10]})
-    if records_flat:
-        df_mes_donnees = pd.DataFrame(records_flat)
-        st.dataframe(df_mes_donnees, use_container_width=True)
-        st.download_button(
-            label="📥 Exporter mes données en CSV",
-            data=df_mes_donnees.to_csv(index=False).encode('utf-8'),
-            file_name="mes_donnees_performance.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("Aucune donnée.")
+            try:
+                ans = json.loads(ans)
+            except Exception:
+                ans = {}
+        if isinstance(ans, dict):
+            for k, v in ans.items():
+                records_flat.append({"Joueur": nom_moi, "Question": str(k), "Valeur": str(v), "Date": str(r.get("submitted_at") or "")[:10]})
+    df_flat = pd.DataFrame(records_flat) if records_flat else pd.DataFrame()
+
+    gps_rows = []
+    for g in obtenir_rapports_gps(athlete_id=mon_id):
+        ligne = {"Séance": g.get("seance_titre", "Séance"), "Date": str(g.get("seance_date") or "")[:10]}
+        for m in COLONNES_GPS_NUMERIQUES:
+            ligne[NOMS_METRIQUES_GPS.get(m, m)] = g.get(m)
+        gps_rows.append(ligne)
+    df_gps_mine = pd.DataFrame(gps_rows) if gps_rows else pd.DataFrame()
+    colonnes_metriques = [NOMS_METRIQUES_GPS.get(m, m) for m in COLONNES_GPS_NUMERIQUES]
+
+    tab_q, tab_g, tab_gps, tab_brut = st.tabs(["Réponses par question", "Graphique", "Les données GPS", "Données brutes"])
+
+    with tab_q:
+        if not df_flat.empty:
+            questions = sorted(df_flat["Question"].unique().tolist())
+            choix_q = st.selectbox("Question :", ["-- Toutes les questions --"] + questions, key="md_q_filtre")
+            df_aff = df_flat if choix_q.startswith("--") else df_flat[df_flat["Question"] == choix_q]
+            df_aff = df_aff.sort_values("Date", ascending=False)
+            st.dataframe(df_aff, use_container_width=True)
+            st.download_button("📥 Exporter mes réponses (CSV)", data=df_aff.to_csv(index=False).encode("utf-8"), file_name="mes_reponses.csv", mime="text/csv", key="md_dl_rep")
+        else:
+            st.info("Aucune donnée.")
+
+    with tab_g:
+        if not df_flat.empty:
+            df_num = df_flat.copy()
+            df_num["Valeur_num"] = pd.to_numeric(df_num["Valeur"], errors="coerce")
+            df_num = df_num.dropna(subset=["Valeur_num"])
+            if not df_num.empty:
+                q_sel = st.selectbox("Variable numérique :", sorted(df_num["Question"].unique().tolist()), key="md_q_graph")
+                df_q = df_num[df_num["Question"] == q_sel].sort_values("Date")
+                fig = px.line(df_q, x="Date", y="Valeur_num", markers=True, template="plotly_dark", title=f"Évolution — {q_sel}")
+                fig.update_layout(yaxis_title="Valeur / Score")
+                st.plotly_chart(fig, use_container_width=True)
+                st.download_button("📥 Exporter les données du graphique (CSV)", data=df_q.to_csv(index=False).encode("utf-8"), file_name="mon_graphique.csv", mime="text/csv", key="md_dl_graph")
+            else:
+                st.info("Pas de données numériques pour tracer un graphique.")
+        else:
+            st.info("Aucune donnée.")
+
+    with tab_gps:
+        st.markdown("### 🛰️ Mes données & rapports GPS")
+        if df_gps_mine.empty:
+            st.info("Aucun rapport GPS pour le moment.")
+        else:
+            df_gps_mine = df_gps_mine.sort_values("Date")
+            st.dataframe(df_gps_mine.round(2), use_container_width=True)
+            metrique_g = st.selectbox("Métrique à tracer :", colonnes_metriques, key="md_gps_metrique")
+            df_gps_mine["Séance (date)"] = df_gps_mine["Séance"] + " — " + df_gps_mine["Date"]
+            st.plotly_chart(px.bar(df_gps_mine, x="Séance (date)", y=metrique_g, template="plotly_dark", title=metrique_g), use_container_width=True)
+            st.download_button("📥 Exporter mes rapports GPS (CSV)", data=df_gps_mine.to_csv(index=False).encode("utf-8"), file_name="mes_rapports_gps.csv", mime="text/csv", key="md_dl_gps")
+
+    with tab_brut:
+        st.markdown("### 📋 Données brutes")
+        if not df_flat.empty:
+            st.markdown("**Mes réponses aux questionnaires**")
+            st.dataframe(df_flat, use_container_width=True)
+        if not df_gps_mine.empty:
+            st.markdown("**Mes données GPS**")
+            st.dataframe(df_gps_mine, use_container_width=True)
+        if df_flat.empty and df_gps_mine.empty:
+            st.info("Aucune donnée brute disponible.")
 
 # =====================================================================
 # PAGE : ANALYTIQUE
