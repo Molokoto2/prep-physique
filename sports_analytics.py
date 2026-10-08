@@ -21,6 +21,25 @@ COLONNES_GPS_NUMERIQUES = [
     "duree_secondes"
 ]
 
+def parse_duree_en_minutes(val_str):
+    """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
+    if pd.isna(val_str):
+        return 0.0
+    val_str = str(val_str).strip()
+    if ":" in val_str:
+        parts = val_str.split(":")
+        try:
+            if len(parts) == 3:
+                return (float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])) / 60.0
+            elif len(parts) == 2:
+                return (float(parts[0]) * 60 + float(parts[1])) / 60.0
+        except:
+            return 0.0
+    try:
+        return float(val_str.replace(",", "."))
+    except:
+        return 0.0
+
 def lire_fichier_gps(file_bytes, nom_fichier=""):
     try:
         if nom_fichier.endswith(".csv"):
@@ -38,7 +57,6 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
 
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Trouver la colonne du nom du joueur et la colonne de la période
     col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
     col_period = next((c for c in df.columns if "period" in c.lower() and "name" in c.lower()), None)
 
@@ -55,7 +73,6 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
     if not col_player:
         raise Exception("Colonne 'Player Name' introuvable dans le fichier.")
 
-    # Filtrer uniquement sur les lignes où la période contient "Session" (si la colonne existe)
     if col_period:
         df = df[df[col_period].astype(str).str.contains("session", case=False, na=False)]
 
@@ -76,6 +93,10 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
                             pass
             return 0.0
 
+        # Récupération et conversion de la durée brute en minutes
+        duree_brute = row.get("Duration", row.get("Time", 0))
+        duree_minutes = parse_duree_en_minutes(duree_brute)
+
         ligne_data = {
             "player_name": nom_joueur,
             "distance_totale_m": get_val(["Distance", "Total Distance"]),
@@ -86,19 +107,60 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
             "nb_decelerations": get_val(["Decel"]),
             "vmax_kmh": get_val(["Vmax", "Max Velocity", "Speed Max"]),
             "meterage_par_minute": get_val(["Meterage", "m/min", "Distance per minute"]),
-            "duree_secondes": get_val(["Duration", "Time"])
+            "duree_secondes": duree_minutes  # stocké en minutes converties
         }
         lignes_extraites.append(ligne_data)
 
     return lignes_extraites
 
 def matcher_nom_athlete(nom_fichier, dict_athletes):
-    """
-    Retrouve l'ID Supabase d'un athlète de manière ultra-souple (insensible à la casse,
-    aux espaces multiples, et à l'ordre Nom/Prénom).
-    """
     if not nom_fichier:
         return None
+    nom_propre = " ".join(str(nom_fichier).strip().lower().split())
+    
+    # 1. Correspondance exacte
+    for nom_db, uuid in dict_athletes.items():
+        if " ".join(nom_db.strip().lower().split()) == nom_propre:
+            return uuid
+            
+    parts_fichier = nom_propre.split()
+    if not parts_fichier:
+        return None
+    prenom_fic = parts_fichier[0]
+    nom_fic = parts_fichier[-1] if len(parts_fichier) > 1 else ""
+    
+    # 2. Correspondance souple (prénom identique + début du nom similaire)
+    for nom_db, uuid in dict_athletes.items():
+        parts_db = nom_db.strip().lower().split()
+        if not parts_db:
+            continue
+        prenom_db = parts_db[0]
+        nom_db_last = parts_db[-1] if len(parts_db) > 1 else ""
+        
+        if prenom_fic == prenom_db:
+            if not nom_fic or not nom_db_last or nom_fic[:4] == nom_db_last[:4]:
+                return uuid
+                
+    return None
+    
+    def parse_duree_en_minutes(val_str):
+    """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
+    if pd.isna(val_str):
+        return 0.0
+    val_str = str(val_str).strip()
+    if ":" in val_str:
+        parts = val_str.split(":")
+        try:
+            if len(parts) == 3:
+                return (float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])) / 60.0
+            elif len(parts) == 2:
+                return (float(parts[0]) * 60 + float(parts[1])) / 60.0
+        except:
+            return 0.0
+    try:
+        return float(val_str.replace(",", "."))
+    except:
+        return 0.0
     
     # Nettoyer et normaliser le nom du fichier
     nom_propre = " ".join(str(nom_fichier).strip().lower().split())
