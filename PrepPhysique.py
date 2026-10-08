@@ -7,6 +7,7 @@ import datetime
 import unicodedata
 import pandas as pd
 from supabase import create_client, Client
+st.write("Test de démarrage OK")
 
 def _get_secret(name: str, default: str = None):
     val = os.environ.get(name)
