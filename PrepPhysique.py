@@ -322,7 +322,9 @@ elif menu == "📊 Analytique":
         else: st.info("Pas de données.")
     with t2: st.info("Comparaison disponible.")
     with t3: st.info("Données GPS.")
-    with t4: if not df.empty: st.dataframe(df, use_container_width=True)
+    with t4:
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
 
 # =====================================================================
 # GESTION DES PROFILS & ÉQUIPES (Modification complète des équipes)
