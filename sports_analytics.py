@@ -37,8 +37,11 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
             raise Exception(f"Impossible de lire le fichier : {e}")
 
     df.columns = [str(c).strip() for c in df.columns]
-    col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
     
+    # Trouver la colonne du nom du joueur et la colonne de la période
+    col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
+    col_period = next((c for c in df.columns if "period" in c.lower() and "name" in c.lower()), None)
+
     if not col_player:
         for i, row in df.iterrows():
             row_str = str(row.values)
@@ -46,10 +49,15 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
                 df = pd.read_csv(io.BytesIO(file_bytes), skiprows=i, sep=None, engine='python') if nom_fichier.endswith(".csv") else pd.read_excel(io.BytesIO(file_bytes), skiprows=i)
                 df.columns = [str(c).strip() for c in df.columns]
                 col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
+                col_period = next((c for c in df.columns if "period" in c.lower() and "name" in c.lower()), None)
                 break
 
     if not col_player:
         raise Exception("Colonne 'Player Name' introuvable dans le fichier.")
+
+    # Filtrer uniquement sur les lignes où la période contient "Session" (si la colonne existe)
+    if col_period:
+        df = df[df[col_period].astype(str).str.contains("session", case=False, na=False)]
 
     lignes_extraites = []
     for _, row in df.iterrows():
@@ -62,58 +70,7 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
                 for c in df.columns:
                     if p.lower() in c.lower():
                         try:
-                            val = float(row.get(c, 0))
-                            return 0.0 if pd.isna(val) else val
-                        except:
-                            pass
-            return 0.0
-
-        ligne_data = {
-            "player_name": nom_joueur,
-            "distance_totale_m": get_val(["Distance", "Total Distance"]),
-            "distance_haute_intensite_m": get_val(["High Intensity", "High-Intensity", "HI Distance"]),
-            "distance_haute_vitesse_m": get_val(["High Speed", "Speed Distance"]),
-            "distance_sprint_m": get_val(["Sprint"]),
-            "nb_accelerations": get_val(["Accel"]),
-            "nb_decelerations": get_val(["Decel"]),
-            "vmax_kmh": get_val(["Vmax", "Max Velocity", "Speed Max"]),
-            "meterage_par_minute": get_val(["Meterage", "m/min", "Distance per minute"]),
-            "duree_secondes": get_val(["Duration", "Time"])
-        }
-        lignes_extraites.append(ligne_data)
-
-    return lignes_extraites
-
-    # Normaliser les noms de colonnes pour trouver "Player Name"
-    df.columns = [str(c).strip() for c in df.columns]
-    col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
-    
-    if not col_player:
-        # Si la colonne Player Name n'est pas trouvée, essayer de chercher dans les premières lignes
-        for i, row in df.iterrows():
-            row_str = str(row.values)
-            if "Player Name" in row_str or "Player" in row_str:
-                df = pd.read_csv(io.BytesIO(file_bytes), skiprows=i) if nom_fichier.endswith(".csv") else pd.read_excel(io.BytesIO(file_bytes), skiprows=i)
-                df.columns = [str(c).strip() for c in df.columns]
-                col_player = next((c for c in df.columns if "player" in c.lower() and "name" in c.lower()), None)
-                break
-
-    if not col_player:
-        raise Exception("Colonne 'Player Name' introuvable dans le fichier.")
-
-    lignes_extraites = []
-    for _, row in df.iterrows():
-        nom_joueur = str(row.get(col_player, "")).strip()
-        if not nom_joueur or nom_joueur.lower() in ["nan", "none", "nat", ""]:
-            continue
-            
-        # Extraire les métriques correspondantes en gérant les variations de noms de colonnes
-        def get_val(possibles):
-            for p in possibles:
-                for c in df.columns:
-                    if p.lower() in c.lower():
-                        try:
-                            val = float(row.get(c, 0))
+                            val = float(str(row.get(c, 0)).replace(",", "."))
                             return 0.0 if pd.isna(val) else val
                         except:
                             pass
