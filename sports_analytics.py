@@ -124,9 +124,6 @@ def matcher_nom_athlete(nom_fichier, dict_athletes):
     return None
 
 def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
-    """
-    Enregistre en base de données les lignes GPS pour tous les joueurs reconnus.
-    """
     n_inseres = 0
     non_trouves = []
     
@@ -151,13 +148,11 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
             l["recorded_at"] = event_date_str
 
             try:
-                # Supprimer l'ancien rapport s'il existe pour éviter les doublons
-                supabase.table("gps_reports").delete().eq("event_id", event_id).eq("athlete_id", athlete_id).execute()
-                # Insérer le nouveau rapport
+                # Insertion directe sans contrainte conflictuelle
                 supabase.table("gps_reports").insert(l).execute()
                 n_inseres += 1
             except Exception as ex:
-                print(f"Erreur Supabase insertion GPS : {ex}")
+                print(f"Erreur d'insertion pour {p_name}: {ex}")
         else:
             if p_name and p_name not in non_trouves:
                 non_trouves.append(p_name)
