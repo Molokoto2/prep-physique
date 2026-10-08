@@ -21,9 +21,6 @@ COLONNES_GPS_NUMERIQUES = [
     "duree_secondes"
 ]
 
-import pandas as pd
-import io
-
 def parse_duree_en_minutes(val_str):
     """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
     if pd.isna(val_str):
@@ -125,61 +122,14 @@ def matcher_nom_athlete(nom_fichier, dict_athletes):
         if " ".join(nom_db.strip().lower().split()) == nom_propre:
             return uuid
             
-    parts_fichier = nom_propre.split()
-    if not parts_fichier:
-        return None
-    prenom_fic = parts_fichier[0]
-    nom_fic = parts_fichier[-1] if len(parts_fichier) > 1 else ""
-    
-    # 2. Correspondance souple (prénom identique + début du nom similaire)
-    for nom_db, uuid in dict_athletes.items():
-        parts_db = nom_db.strip().lower().split()
-        if not parts_db:
-            continue
-        prenom_db = parts_db[0]
-        nom_db_last = parts_db[-1] if len(parts_db) > 1 else ""
-        
-        if prenom_fic == prenom_db:
-            if not nom_fic or not nom_db_last or nom_fic[:4] == nom_db_last[:4]:
-                return uuid
-                
-    return None
-    
-    def parse_duree_en_minutes(val_str):
-    """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
-    if pd.isna(val_str):
-        return 0.0
-    val_str = str(val_str).strip()
-    if ":" in val_str:
-        parts = val_str.split(":")
-        try:
-            if len(parts) == 3:
-                return (float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])) / 60.0
-            elif len(parts) == 2:
-                return (float(parts[0]) * 60 + float(parts[1])) / 60.0
-        except:
-            return 0.0
-    try:
-        return float(val_str.replace(",", "."))
-    except:
-        return 0.0
-    
-    # Nettoyer et normaliser le nom du fichier
-    nom_propre = " ".join(str(nom_fichier).strip().lower().split())
-    
-    # 1. Correspondance exacte
-    for nom_db, uuid in dict_athletes.items():
-        if " ".join(nom_db.strip().lower().split()) == nom_propre:
-            return uuid
-            
-    # 2. Correspondance inversée ou par ensemble de mots (Prénom Nom vs Nom Prénom)
+    # 2. Correspondance inversée ou par ensemble de mots
     mots_fichier = set(nom_propre.split())
     for nom_db, uuid in dict_athletes.items():
         mots_db = set(nom_db.strip().lower().split())
         if mots_fichier and mots_fichier == mots_db:
             return uuid
             
-    # 3. Correspondance partielle forte (si les mots clés du nom en base sont dans le fichier)
+    # 3. Correspondance partielle forte
     for nom_db, uuid in dict_athletes.items():
         mots_db = [m for m in nom_db.strip().lower().split() if len(m) > 2]
         if mots_db and all(m in nom_propre for m in mots_db):
@@ -323,12 +273,11 @@ def obtenir_reponses_avec_definitions():
 def calculer_statut_disponibilite(profiles, responses):
     """
     Calcule le statut de disponibilité de chaque athlète en évaluant 
-    les réponses aux questionnaires et les retours médicaux.
+    les réponses aux questionnaires et les retours médicaux.[cite: 7]
     """
     statuts = {}
     for p in profiles:
         aid = p["id"]
-        # Correction : ajout des guillemets autour de la clé "raison"
         statuts[aid] = {"statut": "disponible", "raison": ""}
     return statuts
 
