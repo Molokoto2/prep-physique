@@ -1,13 +1,11 @@
-import os
-import io
-import csv
-import re
-import json
-import datetime
-import unicodedata
+import streamlit as st
 import pandas as pd
-from supabase import create_client, Client
-st.write("Test de démarrage OK")
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import json
+import requests
+import base64
 
 def _get_secret(name: str, default: str = None):
     val = os.environ.get(name)
