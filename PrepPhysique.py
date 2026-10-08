@@ -388,7 +388,7 @@ def upload_file_direct_http(bucket_name, storage_path, file_bytes, mime_type):
 
 def get_statuts_disponibilite():
     if "cache_statuts_dispo" not in st.session_state:
-        profiles_all = supabase.table("profiles").select("*").execute().data or []
+        profiles_all = supabase.table("profiles").select("*").execute().data or[cite: 4]
         responses_def = obtenir_reponses_avec_definitions()
         st.session_state.cache_statuts_dispo = calculer_statut_disponibilite(profiles_all, responses_def)
     return st.session_state.cache_statuts_dispo
@@ -403,7 +403,7 @@ if menu == "📅 Planning & Séances":
     athletes_list = res_athletes.data if res_athletes.data else []
     dict_athletes = {a.get("full_name", f"Athlète {a['id']}"): a["id"] for a in athletes_list if a.get("full_name")}
     
-    teams_list_all = supabase.table("teams").select("*").execute().data or []
+    teams_list_all = supabase.table("teams").select("*").execute().data or[cite: 4]
     dict_teams_all = {t["name"]: t["id"] for t in teams_list_all}
 
     statuts = get_statuts_disponibilite()
@@ -535,7 +535,7 @@ if menu == "📅 Planning & Séances":
 
         st.markdown("#### 👁️ Affichage du planning")
         vue_planning = st.selectbox("Voir le planning de :", ["Mon planning global (toutes mes séances)", "Une équipe spécifique", "Un joueur spécifique"], key="select_vue_planning_coach")
-        tous_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
+        tous_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or[cite: 4]
 
         if vue_planning == "Une équipe spécifique" and dict_teams_all:
             eq_choisie_p = st.selectbox("Choisir l'équipe :", list(dict_teams_all.keys()), key="select_eq_plan_spec")
@@ -770,9 +770,14 @@ elif menu == "📁 Fichiers & Rapports GPS":
                     if st.button("💾 Importer ce rapport GPS", type="primary"):
                         selected_event = dict_events[gps_event_label]
                         n_inseres, non_trouves = enregistrer_rapport_gps(selected_event["id"], lignes, dict_athletes)
-                        st.success(f"✅ {n_inseres} ligne(s) GPS importée(s) et rattachée(s) à la séance.")
+                        
+                        if n_inseres > 0:
+                            st.success(f"✅ {n_inseres} ligne(s) GPS enregistrée(s) avec succès (correspondant aux profils existants) !")
+                        else:
+                            st.warning("⚠️ Aucune ligne n'a pu être enregistrée. Vérifiez que le nom de l'athlète dans le fichier correspond au profil créé dans l'application.")
+                            
                         if non_trouves:
-                            st.warning(f"⚠️ Noms non reconnus (vérifiez l'orthographe par rapport aux profils athlètes) : {', '.join(non_trouves)}")
+                            st.info(f"ℹ️ Lignes ignorées (profils non créés dans l'application) : {len(non_trouves)} joueur(s). Seules les lignes des joueurs enregistrés (comme Axel) ont été importées.")
                         st.rerun()
                 else:
                     st.info("Aucune ligne exploitable trouvée automatiquement. Vérifiez les colonnes de votre fichier ou essayez un export CSV classique.")
