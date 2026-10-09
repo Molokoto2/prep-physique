@@ -958,7 +958,7 @@ elif menu == "📝 Questionnaires":
                 t_info = ass.get("teams") or {}
                 
                 q_nom = q_info.get("title", "Questionnaire")
-                q_type_moment = "Avant séance" if q_info.get("type"] == "pre_event" else "Après séance"
+                q_type_moment = "Avant séance" if q_info.get("type") == "pre_event" else "Après séance"
                 
                 duree_str = "-"
                 if q_info.get("type") == "pre_event" and q_info.get("trigger_minutes"):
