@@ -506,12 +506,18 @@ def assigner_questionnaire(questionnaire_id, athlete_id=None, event_id=None, tea
     except:
         pass
 
+def supprimer_assignation(assignment_id):
+    try:
+        supabase.table("questionnaire_assignments").delete().eq("id", assignment_id).execute()
+        return True
+    except:
+        return False
+
 def obtenir_assignations():
     try:
         res = supabase.table("questionnaire_assignments").select("*, questionnaires(title, type, trigger_minutes, post_window_minutes), profiles(full_name), teams(name)").execute()
         return res.data if res.data else []
     except:
-        # Fallback si les relations ne sont pas configurées dans Supabase
         try:
             return supabase.table("questionnaire_assignments").select("*").execute().data or []
         except:
