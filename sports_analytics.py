@@ -26,7 +26,6 @@ COLONNES_GPS_NUMERIQUES = [
 ]
 
 def parse_duree_en_minutes(val_str):
-    """Convertit une durée (ex: '01:14:10', '14:10') en minutes décimales."""
     if pd.isna(val_str):
         return 0.0
     val_str = str(val_str).strip()
@@ -40,7 +39,7 @@ def parse_duree_en_minutes(val_str):
         except:
             return 0.0
     try:
-        return float(val_str.replace(",", "."))
+        return float(val_str.replace(",", ".")) / 60.0 if "sec" in str(val_str).lower() else float(val_str.replace(",", "."))
     except:
         return 0.0
 
@@ -117,39 +116,30 @@ def lire_fichier_gps(file_bytes, nom_fichier=""):
     return lignes_extraites
 
 def _norm_nom(s):
-    """Minuscules, sans accents ni ponctuation, espaces nettoyés ('Loïc DUFAU.' -> 'loic dufau')."""
     s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode("ascii")
     s = re.sub(r"[^a-zA-Z0-9\s]", " ", s).lower()
     return " ".join(s.split())
 
 def matcher_nom_athlete(nom_fichier, dict_athletes):
-    """
-    Retrouve l'athlete_id correspondant à un nom du fichier GPS.
-    Insensible aux accents, aux majuscules, à la ponctuation et à l'ordre Nom/Prénom.
-    """
     nom_propre = _norm_nom(nom_fichier)
     if not nom_propre:
         return None
     base = {nom: _norm_nom(nom) for nom in dict_athletes}
 
-    # 1. Correspondance exacte
     for nom_db, n in base.items():
         if n == nom_propre:
             return dict_athletes[nom_db]
 
-    # 2. Mêmes mots dans un ordre différent (ex : "BARGUIN Axel" / "Axel Barguin")
     mots_fichier = set(nom_propre.split())
     for nom_db, n in base.items():
         if mots_fichier and mots_fichier == set(n.split()):
             return dict_athletes[nom_db]
 
-    # 3. Tous les mots (>2 lettres) du profil sont présents dans le nom du fichier
     for nom_db, n in base.items():
         mots_db = [m for m in n.split() if len(m) > 2]
         if mots_db and all(m in mots_fichier for m in mots_db):
             return dict_athletes[nom_db]
 
-    # 4. Petite faute de frappe (ex : "Barguinn")
     cle_f = " ".join(sorted(nom_propre.split()))
     meilleur, meilleur_score = None, 0.0
     for nom_db, n in base.items():
@@ -160,32 +150,22 @@ def matcher_nom_athlete(nom_fichier, dict_athletes):
         return dict_athletes[meilleur]
     return None
 
-
 COLONNES_GPS_ENTIERES = ("nb_accelerations", "nb_decelerations", "duree_secondes")
 
-
 def _preparer_record_gps(ligne, event_id, athlete_id, date_seance):
-    """Construit la ligne à insérer : nombres propres (entiers pour les comptages)."""
     rec = {"event_id": event_id, "athlete_id": athlete_id, "recorded_at": date_seance}
     for col in COLONNES_GPS_NUMERIQUES:
         val = ligne.get(col)
         try:
             val = float(val)
-            if val != val:  # NaN
+            if val != val:
                 val = 0.0
         except (TypeError, ValueError):
             val = 0.0
         rec[col] = int(round(val)) if col in COLONNES_GPS_ENTIERES else round(val, 2)
     return rec
 
-
 def _inserer_gps_en_s_adaptant(record):
-    """
-    Insère une ligne dans gps_reports en s'adaptant à la table réelle de Supabase :
-    - colonne inexistante  -> on retire cette colonne et on réessaie (elle est signalée) ;
-    - colonne de type entier -> on arrondit tous les nombres et on réessaie.
-    Renvoie (ok, colonnes_ignorees, message_erreur).
-    """
     rec = dict(record)
     ignorees = []
     arrondi_fait = False
@@ -204,7 +184,6 @@ def _inserer_gps_en_s_adaptant(record):
                     ignorees.append(col)
                     continue
             if "invalid input syntax for type integer" in msg:
-                # Postgres cite la valeur fautive : on n'arrondit que la/les colonne(s) concernée(s).
                 m = re.search(r'type integer: "([^"]+)"', msg)
                 fautives = [k for k, v in rec.items()
                             if isinstance(v, float) and m and (str(v) == m.group(1) or f"{v:g}" == m.group(1))]
@@ -219,19 +198,12 @@ def _inserer_gps_en_s_adaptant(record):
             return False, ignorees, msg
     return False, ignorees, "Trop de tentatives d'adaptation."
 
-
 def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
-    """
-    Enregistre les lignes GPS des joueurs reconnus dans la table gps_reports.
-    Un ré-import pour la même séance REMPLACE les données du joueur (pas de doublons).
-    Renvoie un dictionnaire :
-      inseres, importes (noms), non_trouves, erreurs, colonnes_ignorees, verifie
-    """
     resultat = {"inseres": 0, "importes": [], "non_trouves": [], "erreurs": [],
                 "colonnes_ignorees": [], "verifie": None}
 
     date_seance = datetime.now().isoformat()
-    events_par_athlete = {}  # athlete_id -> id de SA séance (même titre + même horaire)
+    events_par_athlete = {}
     try:
         ev_res = supabase.table("events").select("title, start_time").eq("id", event_id).execute()
         if ev_res.data:
@@ -264,7 +236,6 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
         record = _preparer_record_gps(l, event_cible, athlete_id, date_seance)
         ok, ignorees, erreur = _inserer_gps_en_s_adaptant(record)
         for c in ignorees:
-            # "recorded_at" est facultative (la date est lue depuis la séance) : pas d'alerte pour elle.
             if c != "recorded_at" and c not in resultat["colonnes_ignorees"]:
                 resultat["colonnes_ignorees"].append(c)
         if ok:
@@ -274,7 +245,6 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
         else:
             resultat["erreurs"].append(f"{p_name} : {erreur}")
 
-    # Vérification : relit la base pour confirmer que les lignes y sont vraiment
     if ids_importes:
         try:
             rel = supabase.table("gps_reports").select("athlete_id").in_("event_id", list(ids_events_utilises)).execute().data or []
@@ -283,12 +253,7 @@ def enregistrer_rapport_gps(event_id, lignes, dict_athletes):
             resultat["erreurs"].append(f"Vérification impossible : {e}")
     return resultat
 
-
 def obtenir_rapports_gps(athlete_id=None, event_id=None):
-    """
-    Rapports GPS (optionnellement filtrés), enrichis avec le titre et la date de la séance.
-    Les séances sont lues séparément (aucune jointure Supabase nécessaire).
-    """
     try:
         q = supabase.table("gps_reports").select("*")
         if athlete_id:
@@ -316,7 +281,6 @@ def obtenir_rapports_gps(athlete_id=None, event_id=None):
     rapports.sort(key=lambda r: str(r.get("seance_date") or ""), reverse=True)
     return rapports
 
-# Fonctions annexes d'authentification et gestion de comptes
 def connexion(email, password):
     try:
         res = supabase.auth.sign_in_with_password({"email": email, "password": password})
@@ -368,12 +332,14 @@ def lister_comptes():
     except:
         return []
 
-def ajouter_athlete_manual(full_name, team_id=None):
-    pass
-
-def modifier_athlete(athlete_id, full_name, team_id=None):
+def modifier_athlete(athlete_id, full_name, team_id=None, numero=None, age=None, taille=None, poids=None):
     try:
-        supabase.table("profiles").update({"full_name": full_name, "team_id": team_id}).eq("id", athlete_id).execute()
+        data = {"full_name": full_name, "team_id": team_id}
+        if numero is not None: data["numero"] = numero
+        if age is not None: data["age"] = age
+        if taille is not None: data["taille"] = taille
+        if poids is not None: data["poids"] = poids
+        supabase.table("profiles").update(data).eq("id", athlete_id).execute()
         return True
     except:
         return False
@@ -407,10 +373,6 @@ def obtenir_reponses_avec_definitions():
         return []
 
 def calculer_statut_disponibilite(profiles, responses):
-    """
-    Calcule le statut de disponibilité de chaque athlète en évaluant 
-    les réponses aux questionnaires et les retours médicaux.[cite: 7]
-    """
     statuts = {}
     for p in profiles:
         aid = p["id"]
@@ -426,7 +388,6 @@ def _lire_answers(valeur):
     return valeur if isinstance(valeur, dict) else {}
 
 def obtenir_reponses_athlete(athlete_id):
-    """Toutes les lignes de réponses d'un athlète."""
     try:
         return supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).execute().data or []
     except Exception as e:
@@ -434,11 +395,6 @@ def obtenir_reponses_athlete(athlete_id):
         return []
 
 def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answers, rpe=None):
-    """
-    Enregistre (ou complète) les réponses d'un athlète pour une séance.
-    S'adapte à la base : une ligne par questionnaire, ou une seule ligne par (athlète, séance)
-    (dans ce cas les réponses sont fusionnées). La colonne "rpe" est facultative.
-    """
     def _maj(ligne, fusion):
         data = {"answers": fusion, "submitted_at": datetime.now().isoformat()}
         if rpe is not None:
@@ -492,7 +448,6 @@ def enregistrer_reponse_evenement(athlete_id, event_id, questionnaire_id, answer
         return False, str(e)
 
 def obtenir_reponse_evenement(athlete_id, event_id):
-    """Réponse d'un athlète pour une séance (réponses de tous les questionnaires fusionnées)."""
     try:
         res = supabase.table("questionnaire_responses").select("*").eq("athlete_id", athlete_id).eq("event_id", event_id).execute()
         if not res.data:
@@ -510,7 +465,6 @@ TITRE_RPE_AUTO = "RPE Post-Séance (Auto)"
 LABEL_RPE_AUTO = "Score RPE global de la séance"
 
 def obtenir_ou_creer_rpe_auto():
-    """Questionnaire RPE (1-10) automatique de chaque séance (créé s'il n'existe pas encore)."""
     try:
         ex = supabase.table("questionnaires").select("*").eq("title", TITRE_RPE_AUTO).execute().data
         if ex:
@@ -543,9 +497,11 @@ def definir_type_questionnaire(q_id, q_type):
     except:
         pass
 
-def assigner_questionnaire(questionnaire_id, athlete_id, event_id=None):
+def assigner_questionnaire(questionnaire_id, athlete_id=None, event_id=None, team_id=None):
     try:
         data = {"questionnaire_id": questionnaire_id, "athlete_id": athlete_id, "event_id": event_id}
+        if team_id:
+            data["team_id"] = team_id
         supabase.table("questionnaire_assignments").insert(data).execute()
     except:
         pass
