@@ -350,7 +350,7 @@ def rendre_formulaire_questionnaire(q_obj, event_id, key_suffix, reponses_deja=N
                 ok, err = enregistrer_reponse_evenement(cible_id, event_id, q_obj["id"], answers_dict, rpe_val)
             if not valeurs_manquantes and ok:
                 st.session_state.pop("cache_statuts_dispo", None)
-                st.success("✅ Questionnaire enregistré avec succès !")
+                st.success("✅ [Rapport GPS envoyé / Questionnaire créé / Assigné] Validé avec succès !")
                 st.rerun()
             elif not valeurs_manquantes:
                 st.error(f"Erreur lors de l'enregistrement : {err}")
@@ -443,7 +443,10 @@ if menu == "📅 Planning & Séances":
     st.subheader("🚨 Alertes & Remontées Joueurs")
     toutes_reponses_alertes = obtenir_reponses_avec_definitions()
     alertes_count = 0
-    events_list_all = supabase.table("events").select("id, title, rpe_cible").execute().data or []
+    try:
+        events_list_all = supabase.table("events").select("id, title, rpe_cible").execute().data or []
+    except:
+        events_list_all = supabase.table("events").select("id, title").execute().data or []
     dict_rpe_cible = {e["id"]: e.get("rpe_cible", 7.0) for e in events_list_all}
 
     for resp in toutes_reponses_alertes[:30]:
@@ -453,13 +456,11 @@ if menu == "📅 Planning & Séances":
             except: ans = {}
         nom_j = next((k for k, v in dict_athletes.items() if v == resp.get("athlete_id")), "Un joueur")
         
-        # Alerte Blessure si oui
         for qk, qv in ans.items():
             if ("blessure" in qk.lower() or "douleur" in qk.lower()) and str(qv).strip().lower() in ["oui", "yes", "1"]:
                 alertes_count += 1
                 st.warning(f"⚠️ **Alerte Blessure/Douleur** — {nom_j} a répondu : *{qk} : {qv}*")
         
-        # Alerte RPE trop éloigné du RPE cible (>= 2)
         rpe_val = resp.get("rpe")
         ev_id = resp.get("event_id")
         if rpe_val is not None and ev_id in dict_rpe_cible:
@@ -561,9 +562,9 @@ if menu == "📅 Planning & Séances":
 
                         if q_auto_id and res_inserted.data:
                             for ev_ins in res_inserted.data:
-                                assigner_questionnaire(q_auto_id, ev_ins["athlete_id"], ev_ins["id"])
+                                assigner_questionnaire(q_auto_id, athlete_id=ev_ins["athlete_id"], event_id=ev_ins["id"])
 
-                        st.success("✅ Séance(s) planifiée(s) avec succès !")
+                        st.success("✅ [Séance planifiée] Validé avec succès !")
                         st.rerun()
                     except Exception as ex:
                         st.error(f"Erreur Supabase : {ex}")
@@ -809,7 +810,7 @@ elif menu == "📁 Fichiers & Rapports GPS":
                         "event_id": selected_event.get("id"), "created_at": datetime.now().isoformat()
                     }
                     supabase.table("session_files").insert([record]).execute()
-                    st.success("✅ PDF envoyé et associé avec succès !")
+                    st.success("✅ [PDF envoyé] Validé avec succès !")
                     st.rerun()
 
     with tab_list:
@@ -867,7 +868,7 @@ elif menu == "📁 Fichiers & Rapports GPS":
                             res = enregistrer_rapport_gps(selected_event["id"], [dict(l) for l in lignes], dict_athletes)
 
                         if res["inseres"] > 0:
-                            st.success("✅ Rapport GPS envoyé et enregistré avec succès !")
+                            st.success("✅ [Rapport GPS envoyé] Validé avec succès !")
                         else:
                             st.error("❌ Erreur lors de l'enregistrement.")
 
@@ -902,7 +903,7 @@ elif menu == "📝 Questionnaires":
             if q_title and st.session_state.questions_draft:
                 supabase.table("questionnaires").insert({"title": q_title, "type": q_type, "questions": st.session_state.questions_draft}).execute()
                 st.session_state.questions_draft = []
-                st.success("✅ Questionnaire créé avec succès !")
+                st.success("✅ [Questionnaire créé] Validé avec succès !")
                 st.rerun()
 
     with tab_gerer:
@@ -938,7 +939,7 @@ elif menu == "📝 Questionnaires":
             with c_mg1:
                 if st.button("💾 Mettre à jour ce questionnaire", type="primary", key=f"btn_save_mod_q_{q_id}"):
                     supabase.table("questionnaires").update({"title": new_q_title, "type": new_q_type, "questions": updated_questions}).eq("id", q_id).execute()
-                    st.success("✅ Questionnaire mis à jour avec succès !")
+                    st.success("✅ [Questionnaire modifié] Validé avec succès !")
                     st.rerun()
             with c_mg2:
                 if st.button("❌ Supprimer définitivement ce questionnaire", type="primary", key=f"del_q_btn_{q_id}"):
@@ -971,7 +972,19 @@ elif menu == "📝 Questionnaires":
                 if eq_choisie:
                     sel_eq_id = dict_t[eq_choisie]
 
-            minutes_val = st.number_input("⏰ Fenêtre (minutes) :", min_value=5, max_value=1440, value=60, step=5)
+            timing_mode = st.radio("Moment de remplissage :", ["Avant séance", "Après séance"], key="rad_timing_assign")
+            est_avant = timing_mode.startswith("Avant")
+            
+            if est_avant:
+                minutes_avant = st.number_input("⏰ Combien de minutes AVANT la séance ?", min_value=5, max_value=1440, value=60, step=5)
+                minutes_apres = 0
+                definir_minutes_avant(q_obj_sel["id"], int(minutes_avant))
+                definir_type_questionnaire(q_obj_sel["id"], "pre_event")
+            else:
+                minutes_apres = st.number_input("⏰ Combien de minutes APRÈS la séance ?", min_value=5, max_value=1440, value=60, step=5)
+                minutes_avant = 0
+                definir_minutes_apres(q_obj_sel["id"], int(minutes_apres))
+                definir_type_questionnaire(q_obj_sel["id"], "post_event")
 
             if st.button("💾 Assigner le questionnaire", type="primary", key="btn_do_assign_q_final"):
                 if cible_assignation.startswith("👤") and not sel_a:
@@ -984,15 +997,37 @@ elif menu == "📝 Questionnaires":
                             assigner_questionnaire(q_obj_sel["id"], athlete_id=dict_a[name])
                     else:
                         assigner_questionnaire(q_obj_sel["id"], team_id=sel_eq_id)
-                    st.success("✅ Questionnaire assigné avec succès !")
+                    st.success("✅ [Questionnaire assigné] Validé avec succès !")
                     st.rerun()
 
         st.markdown("---")
-        st.subheader("📋 Liste des questionnaires assignés")
+        st.subheader("📋 Questionnaires assignés (Informations épurées)")
         assignations_db = obtenir_assignations()
         if assignations_db:
-            df_as = pd.DataFrame(assignations_db)
-            st.dataframe(df_as, use_container_width=True)
+            liste_resume = []
+            for ass in assignations_db:
+                q_info = ass.get("questionnaires") or {}
+                p_info = ass.get("profiles") or {}
+                t_info = ass.get("teams") or {}
+                
+                q_nom = q_info.get("title", "Questionnaire")
+                q_type_moment = "Avant séance" if q_info.get("type") == "pre_event" else "Après séance"
+                
+                duree_str = "-"
+                if q_info.get("type") == "pre_event" and q_info.get("trigger_minutes"):
+                    duree_str = f"{q_info.get('trigger_minutes')} min avant"
+                elif q_info.get("type") == "post_event" and q_info.get("post_window_minutes"):
+                    duree_str = f"{q_info.get('post_window_minutes')} min après"
+
+                cible_nom = p_info.get("full_name") or t_info.get("name") or "—"
+                
+                liste_resume.append({
+                    "Questionnaire": q_nom,
+                    "Assigné à": cible_nom,
+                    "Moment": q_type_moment,
+                    "Délai": duree_str
+                })
+            st.dataframe(pd.DataFrame(liste_resume), use_container_width=True)
         else:
             st.caption("Aucune assignation active.")
 
@@ -1049,7 +1084,7 @@ elif menu == "👥 Effectif":
 
                         if st.form_submit_button("💾 Mettre à jour le joueur", type="primary"):
                             modifier_athlete(aid, m_nom, eq_id, m_num, m_age, m_taille, m_poids)
-                            st.success("✅ Informations mises à jour avec succès !")
+                            st.success("✅ [Profil mis à jour] Validé avec succès !")
                             st.rerun()
 
 # =====================================================================
@@ -1061,7 +1096,7 @@ elif menu == "📅 Séances à venir":
 
     events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
     q_all = supabase.table("questionnaires").select("*").execute().data or []
-    q_pre = [q for q in q_all if q.get("type") == "pre_event"]
+    q_pre = [q for q in q_all if q.get("type"] == "pre_event"]
     q_auto = obtenir_ou_creer_rpe_auto()
     q_post_perso = [q for q in q_all if q.get("type") != "pre_event" and not (q_auto and q.get("id") == q_auto.get("id"))]
     assignations = obtenir_assignations()
@@ -1109,7 +1144,6 @@ elif menu == "📅 Séances à venir":
             afficher_fichiers_evenement(ev["id"], key_prefix=f"av_{ev['id']}")
             reponses_deja = reponses_par_event.get(ev["id"], {})
 
-            # Questionnaire de présence obligatoire
             st.markdown("##### 📝 Questionnaire de présence & état de forme")
             presence_statut = reponses_deja.get("Présence séance")
             if not presence_statut:
@@ -1117,12 +1151,11 @@ elif menu == "📅 Séances à venir":
                     p_val = st.selectbox("Serez-vous présent à cette séance ?", ["Présent", "Absent / Blessé", "Douleur localisée"])
                     if st.form_submit_button("Valider ma présence", type="primary"):
                         enregistrer_reponse_evenement(mon_id, ev["id"], q_pre[0]["id"] if q_pre else "0", {"Présence séance": p_val})
-                        st.success("✅ Présence enregistrée !")
+                        st.success("✅ [Présence enregistrée] Validé avec succès !")
                         st.rerun()
             else:
                 st.info(f"Statut de présence validé : **{presence_statut}**")
 
-            # Boutons explicites pour répondre aux questionnaires wellness, RPE, blessures
             st.markdown("##### 📋 Questionnaires de la séance")
             q_pre_dispo = [q for q in q_pre if questionnaire_disponible_pour(q["id"], mon_id, ev["id"], assignations)]
             
@@ -1180,11 +1213,6 @@ elif menu == "📆 Calendrier":
         ref = st.session_state.ath_cal_ref
         m = ref.month - 1 + delta
         st.session_state.ath_cal_ref = ref.replace(year=ref.year + m // 12, month=m % 12 + 1, day=1)
-
-    def _ouvrir_mois(annee, mois):
-        st.session_state.ath_cal_ref = datetime(annee, mois, 1).date()
-        st.session_state.ath_cal_vue = "🗓️ Mois"
-        st.session_state.ath_cal_event = None
 
     ref = st.session_state.ath_cal_ref
     c1, c2, c3 = st.columns([1, 3, 1])
@@ -1300,13 +1328,12 @@ elif menu == "📊 Analytique":
 
     profiles = supabase.table("profiles").select("*").execute().data or []
     dict_profiles = {p["id"]: p.get("full_name", "") for p in profiles}
-    dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role") == "athlete"}
+    dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role"] == "athlete"}
     teams_all = supabase.table("teams").select("*").execute().data or []
     dict_teams_an = {t["name"]: t["id"] for t in teams_all}
 
     mode_analyse = st.radio("Analyser :", ["👤 Un joueur", "👥 Une équipe"], horizontal=True, key="rad_mode_analytique")
     
-    # Filtre par période
     periode_filtre = st.selectbox("Filtrer par période :", ["Toutes les périodes", "Semaine spécifique", "Mois spécifique", "Année spécifique"])
     
     scope_joueurs = []
@@ -1335,7 +1362,7 @@ elif menu == "📊 Analytique":
             try: ans = json.loads(ans)
             except: ans = {}
         for k, v in ans.items():
-            records_flat.append({"Joueur": str(nom), "Question": str(k), "Valeur": str(v), "Date": r.get("submitted_at","")[:10]})
+            records_flat.append({"Joueur": str(nom), "Question": str(k), "Valeur": str(v), "Date": r.get("submitted_at","")[:10], "athlete_id": r.get("athlete_id"), "event_id": r.get("event_id")})
 
     df_flat = pd.DataFrame(records_flat) if records_flat else pd.DataFrame()
     if not df_flat.empty:
@@ -1390,19 +1417,36 @@ elif menu == "📊 Analytique":
             st.info("Aucune donnée.")
 
     with tab_seance:
-        st.markdown("### 🏋️ Analyse par Séance")
+        st.markdown("### 🏋️ Données complètes de la séance (GPS, RPE & Questionnaires)")
         all_events_an = supabase.table("events").select("id, title, start_time").execute().data or []
         if all_events_an:
             dict_ev_an = {f"{e.get('title')} — {(e.get('start_time') or '')[:16]}": e["id"] for e in all_events_an}
-            sel_ev_label_an = st.selectbox("Choisir une séance :", list(dict_ev_an.keys()))
+            sel_ev_label_an = st.selectbox("Choisir une séance :", list(dict_ev_an.keys()), key="sel_ev_an_complet")
             sel_ev_id_an = dict_ev_an[sel_ev_label_an]
 
+            # Données GPS de la séance
             gps_seance = obtenir_rapports_gps(event_id=sel_ev_id_an)
             if gps_seance:
-                st.markdown("##### 🛰️ Données GPS de cette séance")
-                st.dataframe(pd.DataFrame(gps_seance), use_container_width=True)
+                st.markdown("##### 🛰️ Données GPS")
+                df_gps_s = pd.DataFrame(gps_seance)
+                # Filtrer sur les joueurs sélectionnés/équipe
+                df_gps_s["Nom_Joueur"] = df_gps_s["athlete_id"].map(dict_profiles)
+                if is_team_mode:
+                    df_gps_s = df_gps_s[df_gps_s["Nom_Joueur"].isin(scope_joueurs)]
+                else:
+                    df_gps_s = df_gps_s[df_gps_s["Nom_Joueur"].isin(scope_joueurs)]
+                st.dataframe(df_gps_s, use_container_width=True)
             else:
                 st.info("Aucun rapport GPS pour cette séance.")
+
+            # Réponses RPE et questionnaires de la séance
+            st.markdown("##### 📝 Réponses aux questionnaires & RPE de la séance")
+            if not df_flat.empty:
+                df_seance_resp = df_flat[df_flat["event_id"] == sel_ev_id_an]
+                if not df_seance_resp.empty:
+                    st.dataframe(df_seance_resp[["Joueur", "Question", "Valeur", "Date"]], use_container_width=True)
+                else:
+                    st.info("Aucune réponse de questionnaire pour cette séance.")
         else:
             st.info("Aucune séance disponible.")
 
@@ -1433,11 +1477,9 @@ elif menu == "📊 Analytique":
             metrique_g = st.selectbox("Métrique à tracer :", colonnes_metriques, key="sel_metrique_gps_ind")
             df_gps_all["Séance (date)"] = df_gps_all["Séance"] + " — " + df_gps_all["Date"]
             
-            # GRAPHIQUE EN PREMIER
             st.plotly_chart(px.bar(df_gps_all, x="Séance (date)", y=metrique_g, color="Joueur" if not is_team_mode else None, barmode="group",
                                    template="plotly_dark", title=metrique_g), use_container_width=True)
             
-            # DONNÉES BRUTES ENSUITE
             st.markdown("##### Données brutes GPS")
             st.dataframe(df_gps_all.round(2), use_container_width=True)
 
@@ -1479,7 +1521,7 @@ elif menu == "⚙️ Gestion des profils":
             if st.button("💾 Mettre à jour le profil athlète", key=f"upd_p_{ath_id}", type="primary"):
                 new_t_id = dict_teams_add[upd_team] if upd_team != "Aucune" else None
                 modifier_athlete(ath_id, upd_name, new_t_id)
-                st.success("✅ Profil mis à jour avec succès !")
+                st.success("✅ [Profil mis à jour] Validé avec succès !")
                 st.rerun()
 
     with tab_teams:
@@ -1491,7 +1533,7 @@ elif menu == "⚙️ Gestion des profils":
         if st.button("Créer l'équipe", type="primary"):
             if new_t:
                 creer_equipe(new_t)
-                st.success("✅ Équipe créée avec succès !")
+                st.success("✅ [Équipe créée] Validé avec succès !")
                 st.rerun()
 
         if teams_list:
@@ -1525,7 +1567,7 @@ elif menu == "⚙️ Gestion des profils":
                     t_id = dict_teams_cpt.get(new_team) if new_team != "Aucune" else None
                     ok, msg = creer_compte(new_email, new_password, new_full_name, "athlete", t_id)
                     if ok: 
-                        st.success("✅ Compte athlète créé avec succès !")
+                        st.success("✅ [Compte créé] Validé avec succès !")
                         st.rerun()
                     else: 
                         st.error(msg)
