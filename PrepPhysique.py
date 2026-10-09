@@ -767,7 +767,7 @@ if role_connecte == "coach":
         st.header("📊 Analytique & Données")
         profiles = supabase.table("profiles").select("*").execute().data or []
         dict_profiles = {p["id"]: p.get("full_name", "") for p in profiles}
-        dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role"] == "athlete"}
+        dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role") == "athlete"}
 
         mode = st.radio("Mode :", ["👤 Un joueur", "👥 Une équipe"], horizontal=True)
         j_sel = st.selectbox("Athlète", sorted(dict_athletes.keys())) if mode == "👤 Un joueur" else None
