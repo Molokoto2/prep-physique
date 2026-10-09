@@ -1096,7 +1096,7 @@ elif menu == "📅 Séances à venir":
 
     events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
     q_all = supabase.table("questionnaires").select("*").execute().data or []
-    q_pre = [q for q in q_all if q.get("type"] == "pre_event"]
+    q_pre = [q for q in q_all if q.get("type") == "pre_event"]
     q_auto = obtenir_ou_creer_rpe_auto()
     q_post_perso = [q for q in q_all if q.get("type") != "pre_event" and not (q_auto and q.get("id") == q_auto.get("id"))]
     assignations = obtenir_assignations()
