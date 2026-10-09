@@ -1328,7 +1328,7 @@ elif menu == "📊 Analytique":
 
     profiles = supabase.table("profiles").select("*").execute().data or []
     dict_profiles = {p["id"]: p.get("full_name", "") for p in profiles}
-    dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role"] == "athlete"}
+    dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role") == "athlete"}
     teams_all = supabase.table("teams").select("*").execute().data or []
     dict_teams_an = {t["name"]: t["id"] for t in teams_all}
 
