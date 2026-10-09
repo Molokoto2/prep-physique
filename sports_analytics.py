@@ -508,10 +508,14 @@ def assigner_questionnaire(questionnaire_id, athlete_id=None, event_id=None, tea
 
 def obtenir_assignations():
     try:
-        res = supabase.table("questionnaire_assignments").select("*").execute()
+        res = supabase.table("questionnaire_assignments").select("*, questionnaires(title, type, trigger_minutes, post_window_minutes), profiles(full_name), teams(name)").execute()
         return res.data if res.data else []
     except:
-        return []
+        # Fallback si les relations ne sont pas configurées dans Supabase
+        try:
+            return supabase.table("questionnaire_assignments").select("*").execute().data or []
+        except:
+            return []
 
 def questionnaire_disponible_pour(q_id, athlete_id, event_id, assignations):
     return True
