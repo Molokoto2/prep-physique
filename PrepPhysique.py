@@ -54,6 +54,7 @@ from sports_analytics import (
     obtenir_reponses_events, calculer_effectif, supprimer_assignation,
     LIBELLES_GPS, obtenir_donnees_alertes, calculer_alertes,
     construire_df_reponses, construire_df_gps, filtrer_periode, stats_par_question, table_rpe_vs_cible,
+    resume_effectif, construire_df_cible, LIBELLE_CIBLE, reponses_texte,
 )
 
 NOMS_METRIQUES_GPS = {
@@ -592,9 +593,9 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
 
     tab_q, tab_g, tab_s, tab_gps, tab_brut = st.tabs(["Réponses par question", "Graphique", "Séance", "Les données GPS", "Données brutes"])
 
-    # ---------------- Réponses par question : moyennes ----------------
+    # ---------------- Réponses par question : moyennes + réponses texte ----------------
     with tab_q:
-        stats = stats_par_question(df_resp)
+        stats = stats_par_question(df_resp, afficher_joueur=(mode != "joueur"))
         if df_resp.empty:
             st.info("Aucune réponse sur cette période.")
         else:
@@ -602,23 +603,28 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
                      "multi": "👥 Moyenne des joueurs sélectionnés sur chaque question"}.get(mode, f"👤 Moyenne de {nom_scope} sur chaque question")
             st.markdown(f"### {titre}")
             if stats.empty:
-                st.info("Pas de réponses numériques à moyenner sur cette période.")
+                st.info("Aucune réponse à afficher sur cette période.")
             else:
+                st.caption("Questions numériques : moyenne, min et max. Questions texte : dernières réponses données.")
                 st.dataframe(stats, use_container_width=True, hide_index=True)
-                st.download_button("📥 Exporter les moyennes (CSV)", data=stats.to_csv(index=False).encode("utf-8"), file_name="moyennes_questions.csv", mime="text/csv", key=f"{prefix}_dl_moy")
+                st.download_button("📥 Exporter les moyennes et réponses (CSV)", data=stats.to_csv(index=False).encode("utf-8"), file_name="reponses_par_question.csv", mime="text/csv", key=f"{prefix}_dl_moy")
                 if mode in ("equipe", "multi"):
                     num = df_resp[df_resp["Valeur_num"].notna() & ~df_resp["Question"].isin(LABELS_PRESENCE)]
-                    piv = num.pivot_table(index="Joueur", columns="Question", values="Valeur_num", aggfunc="mean").round(2)
-                    with st.expander("Voir la moyenne de chaque joueur"):
-                        st.dataframe(piv, use_container_width=True)
-            textes = df_resp[df_resp["Valeur_num"].isna() & ~df_resp["Question"].isin(LABELS_PRESENCE)]
+                    if not num.empty:
+                        piv = num.pivot_table(index="Joueur", columns="Question", values="Valeur_num", aggfunc="mean").round(2)
+                        with st.expander("Voir la moyenne de chaque joueur"):
+                            st.dataframe(piv, use_container_width=True)
+            textes = reponses_texte(df_resp)
             if not textes.empty:
-                with st.expander("📝 Réponses texte (douleurs, commentaires...)"):
-                    st.dataframe(aff_df(textes.sort_values("DateObj", ascending=False))[["Date", "Joueur", "Séance", "Question", "Valeur"]], use_container_width=True, hide_index=True)
+                st.markdown("#### 📝 Détail des réponses texte (douleurs, commentaires...)")
+                st.dataframe(aff_df(textes.sort_values("DateObj", ascending=False))[["Date", "Joueur", "Séance", "Question", "Valeur"]], use_container_width=True, hide_index=True)
 
     # ---------------- Graphique ----------------
     with tab_g:
         num = df_resp[df_resp["Valeur_num"].notna() & ~df_resp["Question"].isin(LABELS_PRESENCE)] if not df_resp.empty else df_resp
+        df_cible = construire_df_cible(events_by_id, noms_by_id, debut, fin)
+        if not df_cible.empty:
+            num = pd.concat([num, df_cible], ignore_index=True) if (num is not None and not num.empty) else df_cible
         if num is None or num.empty:
             st.info("Pas de données numériques pour tracer un graphique sur cette période.")
         else:
@@ -631,8 +637,13 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
                 sub = num[num["Question"].isin(choix)]
                 if mode == "multi":
                     for q in choix:
-                        agg = sub[sub["Question"] == q].groupby(["DateObj", "Joueur"], as_index=False)["Valeur_num"].mean()
-                        fig = px.line(agg, x="DateObj", y="Valeur_num", color="Joueur", markers=True, template="plotly_dark", title=q)
+                        sq = sub[sub["Question"] == q]
+                        if q == LIBELLE_CIBLE:
+                            agg = sq.groupby("DateObj", as_index=False)["Valeur_num"].mean()
+                            fig = px.line(agg, x="DateObj", y="Valeur_num", markers=True, template="plotly_dark", title=q)
+                        else:
+                            agg = sq.groupby(["DateObj", "Joueur"], as_index=False)["Valeur_num"].mean()
+                            fig = px.line(agg, x="DateObj", y="Valeur_num", color="Joueur", markers=True, template="plotly_dark", title=q)
                         fig.update_xaxes(tickformat="%d/%m/%Y", title="Date")
                         fig.update_layout(yaxis_title="Valeur")
                         st.plotly_chart(fig, use_container_width=True)
@@ -690,19 +701,20 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
             eff = calculer_effectif(evs, rep_ev, noms_by_id)
             if mode == "joueur":
                 statut = next((k for k in ("disponible", "absent", "indispo", "sans_reponse") if eff[k]), "sans_reponse")
-                lib = {"disponible": "✅ Disponible", "absent": "❌ Absent", "indispo": "🩹 Indisponible", "sans_reponse": "❓ Présence non renseignée"}[statut]
+                lib = {"disponible": "✅ Présent(e) en séance", "absent": "❌ Absent(e)", "indispo": "🩹 Présent(e) en réathlétisation", "sans_reponse": "❓ Présence non renseignée"}[statut]
                 raison = eff[statut][0]["raison"] if eff[statut] else ""
-                st.markdown(f"**Présence :** {lib}" + (f" — {raison}" if raison else ""))
+                st.markdown(f"**Présence :** {lib}" + (f" — {raison}" if raison and raison != "Absent" else ""))
             else:
+                rs = resume_effectif(eff)
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("✅ Disponibles", len(eff["disponible"]))
-                c2.metric("❌ Absents", len(eff["absent"]))
-                c3.metric("🩹 Blessés / douleur", len(eff["indispo"]))
-                c4.metric("❓ Sans réponse", len(eff["sans_reponse"]))
+                c1.metric("✅ Présents en séance", rs["presents"])
+                c2.metric("❌ Absents (dont blessés)", f"{rs['absents']} ({rs['absents_blesses']})")
+                c3.metric("🩹 Présents en réathlétisation", rs["rehab"])
+                c4.metric("❓ Sans réponse", rs["sans_reponse"])
                 with st.expander("Voir la liste des joueurs"):
-                    for cle_s, titre_s in [("disponible", "✅ Disponibles"), ("absent", "❌ Absents"), ("indispo", "🩹 Blessés / douleur"), ("sans_reponse", "❓ Sans réponse")]:
+                    for cle_s, titre_s in [("disponible", "✅ Présents en séance"), ("absent", "❌ Absents"), ("indispo", "🩹 Présents en réathlétisation"), ("sans_reponse", "❓ Sans réponse")]:
                         if eff[cle_s]:
-                            st.markdown(f"**{titre_s}** : " + ", ".join(f"{x['nom']}" + (f" ({x['raison']})" if x['raison'] else "") for x in eff[cle_s]))
+                            st.markdown(f"**{titre_s}** : " + ", ".join(x["nom"] + (f" ({x['raison']})" if x["raison"] and x["raison"] != "Absent" else "") for x in eff[cle_s]))
 
             # RPE vs cible
             t_s = table_rpe_vs_cible(d_resp, events_by_id) if not d_resp.empty else pd.DataFrame()
@@ -712,6 +724,30 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
             m1.metric("RPE réalisé (moyenne)", f"{reel:g}" if reel is not None else "—")
             m2.metric("🎯 RPE cible", f"{float(cible_s):g}" if cible_s is not None else "—")
             m3.metric("Écart", f"{reel - float(cible_s):+.1f}" if (reel is not None and cible_s is not None) else "—")
+
+            # RPE de chaque joueur + RPE cible
+            st.markdown("##### 🎯 RPE de chaque joueur vs RPE cible")
+            lignes_rj = []
+            for e in evs:
+                if d_resp is not None and not d_resp.empty:
+                    dj = d_resp[(d_resp["event_id"] == e["id"]) & d_resp["Question"].str.lower().str.contains("rpe") & d_resp["Valeur_num"].notna()]
+                else:
+                    dj = pd.DataFrame(columns=["Valeur_num"])
+                lignes_rj.append({"Joueur": noms_by_id.get(e.get("athlete_id"), "?"),
+                                  "RPE": round(float(dj["Valeur_num"].mean()), 2) if len(dj) else None,
+                                  "RPE cible": float(e["target_rpe"]) if e.get("target_rpe") is not None else None})
+            df_rj = pd.DataFrame(lignes_rj).sort_values("Joueur")
+            if df_rj["RPE"].notna().any():
+                fig = go.Figure()
+                fig.add_trace(go.Bar(x=df_rj["Joueur"], y=df_rj["RPE"], name="RPE du joueur", marker_color="#ff5a1f"))
+                if df_rj["RPE cible"].notna().any():
+                    fig.add_trace(go.Scatter(x=df_rj["Joueur"], y=df_rj["RPE cible"], name="RPE cible", mode="lines+markers", line=dict(color="#22d3ee", width=3)))
+                fig.update_layout(template="plotly_dark", yaxis=dict(range=[0, 10], title="RPE"), legend_title_text="")
+                st.plotly_chart(fig, use_container_width=True)
+                df_rj["Écart"] = (df_rj["RPE"] - df_rj["RPE cible"]).round(2)
+                st.dataframe(df_rj, use_container_width=True, hide_index=True)
+            else:
+                st.info("Aucun RPE renseigné pour cette séance." + (f" RPE cible prévu : {df_rj['RPE cible'].dropna().iloc[0]:g}." if df_rj["RPE cible"].notna().any() else ""))
 
             # Graphique de la séance
             st.markdown("##### 📈 Graphique de la séance")
@@ -752,13 +788,15 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
             autres = st.multiselect("Séances à comparer :", [k for k in cles if k != sel], format_func=lambda k: _libelle_seance(k, groupes), key=f"{prefix}_s_cmp")
             if autres:
                 nums_all = df_resp_all[df_resp_all["Valeur_num"].notna() & ~df_resp_all["Question"].isin(LABELS_PRESENCE)] if not df_resp_all.empty else df_resp_all
-                choix_m = ["RPE"] + (sorted(nums_all["Question"].unique()) if nums_all is not None and not nums_all.empty else []) + (cols_gps if not df_gps_all.empty else [])
+                choix_m = ["RPE", LIBELLE_CIBLE] + (sorted(nums_all["Question"].unique()) if nums_all is not None and not nums_all.empty else []) + (cols_gps if not df_gps_all.empty else [])
                 m_c = st.selectbox("Donnée à comparer :", choix_m, key=f"{prefix}_s_cmp_m")
                 lignes = []
                 for k in [sel] + autres:
                     ids_k = {e["id"] for e in groupes[k]}
                     if m_c in cols_gps:
                         serie = df_gps_all[df_gps_all["event_id"].isin(ids_k)][m_c].dropna()
+                    elif m_c == LIBELLE_CIBLE:
+                        serie = pd.Series([float(e["target_rpe"]) for e in groupes[k] if e.get("target_rpe") is not None], dtype=float)
                     elif m_c == "RPE":
                         dk = df_resp_all[df_resp_all["event_id"].isin(ids_k) & df_resp_all["Question"].str.lower().str.contains("rpe") & df_resp_all["Valeur_num"].notna()]
                         serie = dk["Valeur_num"]
@@ -838,6 +876,12 @@ if role_connecte == "coach" and not st.session_state.get("_auto_q_ok"):
     obtenir_ou_creer_presence_auto()
     st.session_state["_auto_q_ok"] = True
 
+# ---- Page « Effectif » : on repart des données enregistrées quand on y revient ----
+if st.session_state.get("_menu_courant") != menu:
+    for _k in [k for k in st.session_state if str(k).startswith(("eff_src_", "eff_ver_", "eff_ids_"))]:
+        del st.session_state[_k]
+    st.session_state["_menu_courant"] = menu
+
 # ---- Compteur d'alertes dans la barre latérale (coach) ----
 if role_connecte == "coach":
     try:
@@ -865,27 +909,8 @@ if menu == "📅 Planning & Séances":
 
     statuts = get_statuts_disponibilite()
     ids_blesses = {aid for aid, s in statuts.items() if s["statut"] == "blesse"}
-    n_blesses = len(ids_blesses)
-    n_dispo = len(dict_athletes) - n_blesses
-
-    st.markdown("#### 🩹 Disponibilité de l'effectif")
-    c_stat1, c_stat2, c_stat3 = st.columns(3)
-    c_stat1.metric("👥 Effectif total", len(dict_athletes))
-    c_stat2.metric("✅ Disponibles", n_dispo)
-    c_stat3.metric("🚑 En réathlétisation", n_blesses)
-
     st.markdown("---")
-    st.subheader("🚨 Alertes récentes")
-    alertes_resume = alertes_non_vues()
-    if not alertes_resume:
-        st.success("Aucune alerte récente (douleur, blessure, RPE, valeurs extrêmes).")
-    else:
-        st.warning(f"{len(alertes_resume)} alerte(s) à consulter — détail et filtres dans l'onglet « 🔔 Alertes ».")
-        for a in alertes_resume[:5]:
-            st.markdown(f"- {ICONES_ALERTES.get(a['type'], '⚠️')} **{a['athlete']}** · {a['seance']} ({a['date']}) — {a['message']}")
-
-    st.markdown("---")
-    tab_nouvelle, tab_existantes, tab_rpe = st.tabs(["🆕 Planifier une nouvelle séance", "📋 Séances planifiées (modifier / supprimer)", "🚫 RPE obligatoire"])
+    tab_nouvelle, tab_existantes = st.tabs(["🆕 Planifier une nouvelle séance", "📋 Séances planifiées (modifier / supprimer)"])
 
     # ------------------------------------------------------------------
     # Nouvelle séance
@@ -996,21 +1021,48 @@ if menu == "📅 Planning & Séances":
         else:
             reponses_events = obtenir_reponses_events([e["id"] for e in tous_events])
 
-            # ---- Effectif des prochaines séances ----
+            # ---- Prochaine séance : date, heure, lieu et effectif ----
             now_loc = maintenant_local()
-            prochaines = sorted([k for k in groupes if (parse_dt(k[1]) or now_loc) >= now_loc - timedelta(hours=3)], key=lambda k: k[1])[:6]
+            def _fin_seance(k):
+                return parse_dt(k[2]) or parse_dt(k[1]) or now_loc
+            a_venir_k = sorted([k for k in groupes if _fin_seance(k) >= now_loc], key=lambda k: k[1])
+
+            st.markdown("#### 🔜 Prochaine séance")
+            if not a_venir_k:
+                st.info("Aucune séance à venir pour cette sélection.")
+            else:
+                k0 = a_venir_k[0]
+                grp0 = groupes[k0]
+                d_debut, d_fin = parse_dt(k0[1]), parse_dt(k0[2])
+                lieu0 = grp0[0].get("location") or "Lieu non précisé"
+                horaire0 = d_debut.strftime("%H:%M") + (f" → {d_fin.strftime('%H:%M')}" if d_fin else "") if d_debut else ""
+                st.markdown(f"### {'⚔️' if grp0[0].get('event_type') == 'match' else '🏋️'} {k0[0]}")
+                st.markdown(f"📅 **{fmt_date_fr(k0[1])}** · 🕒 **{horaire0}** · 📍 **{lieu0}**" + (f" · 🎯 RPE cible : **{float(grp0[0]['target_rpe']):g}**" if grp0[0].get("target_rpe") is not None else ""))
+                eff0 = calculer_effectif(grp0, reponses_events, noms_by_id)
+                rs0 = resume_effectif(eff0)
+                n1, n2, n3, n4 = st.columns(4)
+                n1.metric("✅ Présents en séance", rs0["presents"])
+                n2.metric("❌ Absents (dont blessés)", f"{rs0['absents']} ({rs0['absents_blesses']})")
+                n3.metric("🩹 Présents en réathlétisation", rs0["rehab"])
+                n4.metric("❓ Sans réponse", rs0["sans_reponse"])
+                for cle_e, titre_e in [("disponible", "✅ Présents en séance"), ("absent", "❌ Absents"),
+                                       ("indispo", "🩹 Présents mais en réathlétisation (douleur / blessure)"), ("sans_reponse", "❓ Pas encore répondu")]:
+                    if eff0[cle_e]:
+                        st.markdown(f"**{titre_e} ({len(eff0[cle_e])}) :** " + ", ".join(x["nom"] + (f" — {x['raison']}" if x["raison"] and x["raison"] != "Absent" else "") for x in eff0[cle_e]))
+
+            st.markdown("---")
             with st.expander("👥 Effectif des prochaines séances (selon les réponses de présence)", expanded=True):
-                if not prochaines:
+                if not a_venir_k:
                     st.caption("Aucune séance à venir.")
                 else:
                     lignes_eff = []
-                    for k in prochaines:
-                        eff = calculer_effectif(groupes[k], reponses_events, noms_by_id)
+                    for k in a_venir_k[:6]:
+                        rs = resume_effectif(calculer_effectif(groupes[k], reponses_events, noms_by_id))
                         lignes_eff.append({"Séance": k[0], "Date": fmt_date_fr(k[1], True), "Prévus": len(groupes[k]),
-                                           "✅ Disponibles": len(eff["disponible"]), "❌ Absents": len(eff["absent"]),
-                                           "🩹 Blessés / douleur": len(eff["indispo"]), "❓ Sans réponse": len(eff["sans_reponse"])})
+                                           "✅ Présents": rs["presents"], "❌ Absents": rs["absents"], "dont blessés": rs["absents_blesses"],
+                                           "🩹 Présents en réathlé.": rs["rehab"], "❓ Sans réponse": rs["sans_reponse"]})
                     st.dataframe(pd.DataFrame(lignes_eff), use_container_width=True, hide_index=True)
-                    st.caption("Un joueur est compté ✅ s'il répond Présent = Oui, Blessure = Non et Douleur = Non / Aucune / Rien. Clique sur une séance dans le calendrier pour voir la liste des joueurs.")
+                    st.caption("✅ Présent = Présence Oui, Blessure Non, Douleur Non / Aucune / Rien. 🩹 Présent en réathlétisation = vient malgré une blessure ou une douleur. Clique sur une séance dans le calendrier pour la modifier.")
 
             # ---- Calendrier ----
             events_par_jour = {}
@@ -1077,17 +1129,18 @@ if menu == "📅 Planning & Séances":
 
                 # ---- Effectif de la séance ----
                 eff = calculer_effectif(grp_sel, reponses_events, noms_by_id)
+                rs = resume_effectif(eff)
                 st.markdown("##### 👥 Effectif de la séance")
                 e1, e2, e3, e4, e5 = st.columns(5)
                 e1.metric("Joueurs prévus", len(grp_sel))
-                e2.metric("✅ Disponibles", len(eff["disponible"]))
-                e3.metric("❌ Absents", len(eff["absent"]))
-                e4.metric("🩹 Blessés / douleur", len(eff["indispo"]))
-                e5.metric("❓ Sans réponse", len(eff["sans_reponse"]))
-                for cle_e, titre_e in [("disponible", "✅ Joueurs disponibles sur la séance"), ("absent", "❌ Absents"),
-                                       ("indispo", "🩹 Blessés / douleur (retirés de la séance)"), ("sans_reponse", "❓ N'ont pas encore répondu")]:
+                e2.metric("✅ Présents", rs["presents"])
+                e3.metric("❌ Absents (dont blessés)", f"{rs['absents']} ({rs['absents_blesses']})")
+                e4.metric("🩹 Présents en réathlé.", rs["rehab"])
+                e5.metric("❓ Sans réponse", rs["sans_reponse"])
+                for cle_e, titre_e in [("disponible", "✅ Présents en séance"), ("absent", "❌ Absents"),
+                                       ("indispo", "🩹 Présents mais en réathlétisation"), ("sans_reponse", "❓ N'ont pas encore répondu")]:
                     if eff[cle_e]:
-                        st.markdown(f"**{titre_e} ({len(eff[cle_e])}) :** " + ", ".join(x["nom"] + (f" — {x['raison']}" if x["raison"] else "") for x in eff[cle_e]))
+                        st.markdown(f"**{titre_e} ({len(eff[cle_e])}) :** " + ", ".join(x["nom"] + (f" — {x['raison']}" if x["raison"] and x["raison"] != "Absent" else "") for x in eff[cle_e]))
 
                 st.markdown("##### ✏️ Modifier la séance" + (f" (s'applique aux {len(grp_sel)} joueurs)" if len(grp_sel) > 1 else ""))
                 dt_start_existing = parse_dt(ev_sel.get("start_time")) or datetime.now()
@@ -1148,65 +1201,6 @@ if menu == "📅 Planning & Séances":
             else:
                 st.info("👆 Clique sur une séance du calendrier pour voir son effectif et la modifier.")
 
-    with tab_rpe:
-        st.subheader("🚫 RPE obligatoire après la séance")
-        st.caption(
-            "Par défaut, chaque athlète doit remplir son RPE (1-10) après chaque séance, dans l'heure qui suit. "
-            "Ici, vous pouvez retirer cette obligation pour un athlète sur une ou plusieurs séances, "
-            "ou pour tous les joueurs d'une séance. Vous pouvez aussi la remettre."
-        )
-        if st.session_state.get("flash_rpe"):
-            st.success(st.session_state.pop("flash_rpe"))
-
-        mode_rpe = st.radio("Retirer le RPE pour :", ["👤 Un athlète (une ou plusieurs séances)", "👥 Une séance entière (tous les joueurs)"],
-                            horizontal=True, key="rpe_mode_radio")
-        evs_rpe = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
-        inv_rpe = {v: k for k, v in dict_athletes.items()}
-
-        def _lib_ev(e):
-            d = fmt_date_fr(e.get("start_time"), True)
-            return f"{e.get('title', 'Séance')} — {d}" + ("  🚫 RPE retiré" if e.get("rpe_desactive") else "")
-
-        ids_cibles = []
-        if not dict_athletes or not evs_rpe:
-            st.info("Aucune séance planifiée pour le moment.")
-        elif mode_rpe.startswith("👤"):
-            nom_rpe = st.selectbox("Athlète :", sorted(dict_athletes.keys()), key="rpe_sel_athlete")
-            evs_ath = [e for e in evs_rpe if e.get("athlete_id") == dict_athletes[nom_rpe]]
-            par_id = {e["id"]: e for e in evs_ath}
-            ids_cibles = st.multiselect("Séance(s) concernée(s) :", list(par_id.keys()), format_func=lambda i: _lib_ev(par_id[i]), key="rpe_sel_events_ath")
-        else:
-            groupes_rpe = {}
-            for e in evs_rpe:
-                groupes_rpe.setdefault((e.get("title"), e.get("start_time")), []).append(e)
-            cles = st.multiselect(
-                "Séance(s) concernée(s) :", list(groupes_rpe.keys()),
-                format_func=lambda k: f"{k[0]} — {fmt_date_fr(k[1], True)} ({len(groupes_rpe[k])} joueur(s))",
-                key="rpe_sel_events_groupe"
-            )
-            ids_cibles = [e["id"] for k in cles for e in groupes_rpe[k]]
-
-        c_r1, c_r2 = st.columns(2)
-        for colonne, valeur, libelle, message in [
-            (c_r1, True, "🚫 Retirer le RPE obligatoire", "RPE retiré pour {n} séance(s)."),
-            (c_r2, False, "✅ Remettre le RPE obligatoire", "RPE remis pour {n} séance(s)."),
-        ]:
-            with colonne:
-                if st.button(libelle, key=f"btn_rpe_{valeur}", disabled=not ids_cibles, type="primary" if valeur else "secondary"):
-                    try:
-                        supabase.table("events").update({"rpe_desactive": valeur}).in_("id", ids_cibles).execute()
-                        st.session_state["flash_rpe"] = message.format(n=len(ids_cibles))
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"Impossible d'enregistrer : {ex}")
-                        st.info("Si l'erreur parle d'une colonne « rpe_desactive » inconnue, exécutez une fois ceci dans Supabase (SQL Editor) puis réessayez :")
-                        st.code("alter table events add column if not exists rpe_desactive boolean default false;", language="sql")
-
-        retires = [e for e in evs_rpe if e.get("rpe_desactive")]
-        if retires:
-            st.markdown("#### Séances dont le RPE est retiré")
-            st.dataframe(pd.DataFrame([{"Athlète": inv_rpe.get(e.get("athlete_id"), "?"), "Séance": e.get("title"), "Date": fmt_date_fr(e.get("start_time"), True)} for e in retires]),
-                         use_container_width=True)
 
 # =====================================================================
 # PAGE : ALERTES
@@ -1281,6 +1275,28 @@ elif menu == "👥 Effectif":
             st.warning("Certaines colonnes (numéro, naissance, taille, poids, poste, notes) n'existent pas encore dans la table `profiles`. Exécutez ce SQL une fois dans Supabase, puis rechargez la page :")
             st.code(SQL_MIGRATION, language="sql")
 
+        def _to_date(v):
+            """Accepte date, datetime, Timestamp, texte AAAA-MM-JJ ou JJ/MM/AAAA (l'éditeur peut renvoyer n'importe lequel)."""
+            if v is None:
+                return None
+            try:
+                if pd.isna(v):
+                    return None
+            except (TypeError, ValueError):
+                pass
+            if isinstance(v, datetime):
+                return v.date()
+            if hasattr(v, "isoformat") and not isinstance(v, str):
+                return v
+            s = str(v).strip()
+            for f in ("%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    return datetime.strptime(s[:10], f).date()
+                except ValueError:
+                    pass
+            d = parse_dt(s)
+            return d.date() if d else None
+
         def _age(d):
             if not d:
                 return None
@@ -1293,29 +1309,50 @@ elif menu == "👥 Effectif":
             except (ValueError, TypeError):
                 return None
 
-        lignes_eff = []
-        for p in joueurs:
-            bd = parse_dt(p.get("birth_date"))
-            bd = bd.date() if bd else None
-            lignes_eff.append({
-                "Nom & prénom": p.get("full_name") or "", "N°": _num(p.get("jersey_number")), "Date de naissance": bd,
-                "Âge": _age(bd), "Taille (cm)": _num(p.get("height_cm")), "Poids (kg)": _num(p.get("weight_kg")),
-                "Poste": p.get("position") or "", "Notes / informations": p.get("notes") or "",
-            })
+        def _champs(nom, num, naissance, taille, poids, poste, notes):
+            """Valeurs normalisées (pour comparer et enregistrer)."""
+            bd = _to_date(naissance)
+            n_num, n_taille, n_poids = _num(num), _num(taille), _num(poids)
+            return {
+                "full_name": str(nom or "").strip(),
+                "jersey_number": None if n_num is None else int(n_num),
+                "birth_date": bd.isoformat() if bd else None,
+                "height_cm": None if n_taille is None else round(n_taille, 2),
+                "weight_kg": None if n_poids is None else round(n_poids, 2),
+                "position": str(poste or "").strip() or None,
+                "notes": str(notes or "").strip() or None,
+            }
+
+        def _champs_db(p):
+            return _champs(p.get("full_name"), p.get("jersey_number"), p.get("birth_date"), p.get("height_cm"), p.get("weight_kg"), p.get("position"), p.get("notes"))
+
+        def _df_depuis_db():
+            lignes = []
+            for p in joueurs:
+                bd = _to_date(p.get("birth_date"))
+                lignes.append({
+                    "Nom & prénom": p.get("full_name") or "", "N°": _num(p.get("jersey_number")), "Date de naissance": bd,
+                    "Âge": _age(bd), "Taille (cm)": _num(p.get("height_cm")), "Poids (kg)": _num(p.get("weight_kg")),
+                    "Poste": p.get("position") or "", "Notes / informations": p.get("notes") or "",
+                })
+            df = pd.DataFrame(lignes)
+            df["Date de naissance"] = pd.to_datetime(df["Date de naissance"], errors="coerce")
+            return df
 
         if not joueurs:
             st.info("Aucun joueur dans cette équipe pour le moment. Ajoutez-en ci-dessous.")
         else:
-            df_eff = pd.DataFrame(lignes_eff)
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Joueurs", len(df_eff))
-            k2.metric("Âge moyen", f"{df_eff['Âge'].dropna().mean():.1f} ans" if df_eff["Âge"].notna().any() else "—")
-            k3.metric("Taille moyenne", f"{df_eff['Taille (cm)'].dropna().mean():.0f} cm" if df_eff["Taille (cm)"].notna().any() else "—")
-            k4.metric("Poids moyen", f"{df_eff['Poids (kg)'].dropna().mean():.1f} kg" if df_eff["Poids (kg)"].notna().any() else "—")
+            src_key, ver_key, ids_key = f"eff_src_{eq_id}", f"eff_ver_{eq_id}", f"eff_ids_{eq_id}"
+            ids_actuels = [p["id"] for p in joueurs]
+            if src_key not in st.session_state or st.session_state.get(ids_key) != ids_actuels:
+                st.session_state[src_key] = _df_depuis_db()
+                st.session_state[ver_key] = 0
+                st.session_state[ids_key] = ids_actuels
 
-            st.caption("Double-cliquez sur une case pour la modifier, puis cliquez sur « Enregistrer ». L'âge se calcule à partir de la date de naissance.")
+            st.caption("Double-cliquez sur une case pour la modifier. L'âge se calcule tout seul dès que vous saisissez la date de naissance. Cliquez ensuite sur « Enregistrer ».")
             edite = st.data_editor(
-                df_eff, key=f"eff_editor_{eq_id}", hide_index=True, use_container_width=True, num_rows="fixed", disabled=["Âge"],
+                st.session_state[src_key], key=f"eff_editor_{eq_id}_{st.session_state[ver_key]}", hide_index=True, use_container_width=True,
+                num_rows="fixed", disabled=["Âge"],
                 column_config={
                     "N°": st.column_config.NumberColumn("N°", min_value=0, max_value=999, step=1, format="%d"),
                     "Date de naissance": st.column_config.DateColumn("Date de naissance", format="DD/MM/YYYY", min_value=datetime(1950, 1, 1).date(), max_value=datetime.now().date()),
@@ -1324,45 +1361,53 @@ elif menu == "👥 Effectif":
                     "Poids (kg)": st.column_config.NumberColumn("Poids (kg)", min_value=30, max_value=200, step=0.5, format="%.1f"),
                 },
             )
-            if st.button("💾 Enregistrer les modifications de l'effectif", type="primary", key=f"eff_save_{eq_id}"):
-                erreurs, nb = [], 0
-                for p, (_, nouv) in zip(joueurs, edite.iterrows()):
-                    def _d(v):
-                        return None if v is None or v != v else v
-                    bd_new = _d(nouv["Date de naissance"])
-                    maj = {
-                        "full_name": str(nouv["Nom & prénom"]).strip() or p.get("full_name"),
-                        "jersey_number": None if _d(nouv["N°"]) is None else int(nouv["N°"]),
-                        "birth_date": bd_new.isoformat() if hasattr(bd_new, "isoformat") else None,
-                        "height_cm": None if _d(nouv["Taille (cm)"]) is None else float(nouv["Taille (cm)"]),
-                        "weight_kg": None if _d(nouv["Poids (kg)"]) is None else float(nouv["Poids (kg)"]),
-                        "position": str(nouv["Poste"] or "").strip() or None,
-                        "notes": str(nouv["Notes / informations"] or "").strip() or None,
-                    }
-                    avant = {"full_name": p.get("full_name"), "jersey_number": p.get("jersey_number"), "birth_date": p.get("birth_date"),
-                             "height_cm": p.get("height_cm"), "weight_kg": p.get("weight_kg"), "position": p.get("position"), "notes": p.get("notes")}
-                    def _n(v):
-                        if v is None or v == "":
-                            return None
-                        try:
-                            return round(float(v), 4)
-                        except (ValueError, TypeError):
-                            return str(v).strip()
-                    if {k: _n(v) for k, v in maj.items()} == {k: _n(v) for k, v in avant.items()}:
-                        continue
+
+            # Âge automatique : recalculé dès que la date de naissance change
+            ages = edite["Date de naissance"].apply(lambda v: _age(_to_date(v)))
+            if not ages.astype(float).fillna(-1).equals(edite["Âge"].astype(float).fillna(-1)):
+                recalc = edite.copy()
+                recalc["Date de naissance"] = pd.to_datetime(recalc["Date de naissance"].apply(_to_date), errors="coerce")
+                recalc["Âge"] = ages
+                st.session_state[src_key] = recalc
+                st.session_state[ver_key] += 1
+                st.rerun()
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Joueurs", len(edite))
+            k2.metric("Âge moyen", f"{ages.dropna().astype(float).mean():.1f} ans" if ages.notna().any() else "—")
+            k3.metric("Taille moyenne", f"{edite['Taille (cm)'].dropna().mean():.0f} cm" if edite["Taille (cm)"].notna().any() else "—")
+            k4.metric("Poids moyen", f"{edite['Poids (kg)'].dropna().mean():.1f} kg" if edite["Poids (kg)"].notna().any() else "—")
+
+            modifications = []
+            for p, (_, r) in zip(joueurs, edite.iterrows()):
+                nouv = _champs(r["Nom & prénom"], r["N°"], r["Date de naissance"], r["Taille (cm)"], r["Poids (kg)"], r["Poste"], r["Notes / informations"])
+                if not nouv["full_name"]:
+                    nouv["full_name"] = p.get("full_name")
+                if nouv != _champs_db(p):
+                    modifications.append((p, nouv))
+            if modifications:
+                st.warning(f"⚠️ {len(modifications)} joueur(s) modifié(s) : les changements ne sont enregistrés qu'après avoir cliqué sur « Enregistrer ».")
+
+            if st.button("💾 Enregistrer les modifications de l'effectif", type="primary", key=f"eff_save_{eq_id}", disabled=not modifications):
+                erreurs = []
+                for p, nouv in modifications:
                     try:
-                        supabase.table("profiles").update(maj).eq("id", p["id"]).execute()
-                        nb += 1
+                        supabase.table("profiles").update(nouv).eq("id", p["id"]).execute()
+                        relu = supabase.table("profiles").select("*").eq("id", p["id"]).execute().data
+                        if not relu or _champs_db(relu[0]) != nouv:
+                            erreurs.append(f"{p.get('full_name')} : la base n'a pas conservé les valeurs (droits d'écriture Supabase sur `profiles` ?)")
                     except Exception as ex:
                         erreurs.append(f"{p.get('full_name')} : {ex}")
                 if erreurs:
                     st.error("Erreur lors de l'enregistrement :")
                     for e in erreurs:
                         st.code(e)
-                    st.info("Si l'erreur parle d'une colonne inconnue, exécutez le SQL ci-dessus (une seule fois) puis réessayez.")
+                    st.info("Si l'erreur parle d'une colonne inconnue, exécutez ce SQL (une seule fois) puis réessayez :")
                     st.code(SQL_MIGRATION, language="sql")
                 else:
-                    flash_succes(f"Effectif de l'équipe « {eq_nom} » enregistré ({nb} joueur(s) modifié(s)).")
+                    for k in (src_key, ver_key, ids_key):
+                        st.session_state.pop(k, None)
+                    flash_succes(f"Effectif de l'équipe « {eq_nom} » enregistré ({len(modifications)} joueur(s) modifié(s)) : dates de naissance, tailles et poids sont sauvegardés.")
                     st.rerun()
 
         st.markdown("---")
@@ -1569,7 +1614,7 @@ elif menu == "📝 Questionnaires":
     st.header("📝 Gestion complète des Questionnaires")
     afficher_flash()
     st.caption("🤖 Deux questionnaires sont ajoutés automatiquement à chaque séance : « Présence & Blessures » (jusqu'au début de la séance) et « RPE » 1-10 (après la séance). Les questionnaires ci-dessous sont les vôtres.")
-    tab_creer, tab_gerer, tab_envoyer, tab_assignes, tab_repondre = st.tabs(["🆕 Créer un modèle", "⚙️ Modifier / Supprimer", "📩 Assigner", "📋 Questionnaires assignés", "✍️ Saisie manuelle"])
+    tab_creer, tab_gerer, tab_envoyer, tab_assignes, tab_rpe, tab_repondre = st.tabs(["🆕 Créer un modèle", "⚙️ Modifier / Supprimer", "📩 Assigner", "📋 Questionnaires assignés", "🚫 RPE obligatoire", "✍️ Saisie manuelle"])
 
     NOMS_FORMATS = {
         "scale": "Échelle numérique", "text": "Texte libre", "number": "Nombre libre",
@@ -1835,6 +1880,62 @@ elif menu == "📝 Questionnaires":
                     nb_retires += 1 if ok_s else 0
                 flash_succes(f"Délai de « {sel_qm} » mis à jour ({int(nv_minutes)} min)" + (f" et {nb_retires} assignation(s) retirée(s)." if retirer_idx else "."))
                 st.rerun()
+
+    with tab_rpe:
+        st.subheader("🚫 RPE obligatoire après la séance")
+        st.caption(
+            "Par défaut, chaque athlète doit remplir son RPE (1-10) après chaque séance, dans l'heure qui suit. "
+            "Ici, vous pouvez retirer cette obligation pour un athlète sur une ou plusieurs séances, "
+            "ou pour tous les joueurs d'une séance. Vous pouvez aussi la remettre."
+        )
+        ath_rpe = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
+        dict_athletes_rpe = {a["full_name"]: a["id"] for a in ath_rpe if a.get("full_name")}
+        inv_rpe = {v: k for k, v in dict_athletes_rpe.items()}
+        mode_rpe = st.radio("Retirer le RPE pour :", ["👤 Un athlète (une ou plusieurs séances)", "👥 Une séance entière (tous les joueurs)"],
+                            horizontal=True, key="rpe_mode_radio")
+        evs_rpe = mes_evenements(supabase.table("events").select("*").order("start_time", desc=True).execute().data or [])
+
+        def _lib_ev(e):
+            return f"{e.get('title', 'Séance')} — {fmt_date_fr(e.get('start_time'), True)}" + ("  🚫 RPE retiré" if e.get("rpe_desactive") else "")
+
+        ids_cibles = []
+        if not dict_athletes_rpe or not evs_rpe:
+            st.info("Aucune séance planifiée pour le moment.")
+        elif mode_rpe.startswith("👤"):
+            nom_rpe = st.selectbox("Athlète :", sorted(dict_athletes_rpe.keys()), key="rpe_sel_athlete")
+            evs_ath = [e for e in evs_rpe if e.get("athlete_id") == dict_athletes_rpe[nom_rpe]]
+            par_id = {e["id"]: e for e in evs_ath}
+            ids_cibles = st.multiselect("Séance(s) concernée(s) :", list(par_id.keys()), format_func=lambda i: _lib_ev(par_id[i]), key="rpe_sel_events_ath")
+        else:
+            groupes_rpe = groupes_seances(evs_rpe)
+            cles = st.multiselect(
+                "Séance(s) concernée(s) :", list(groupes_rpe.keys()),
+                format_func=lambda k: f"{k[0]} — {fmt_date_fr(k[1], True)} ({len(groupes_rpe[k])} joueur(s))",
+                key="rpe_sel_events_groupe"
+            )
+            ids_cibles = [e["id"] for k in cles for e in groupes_rpe[k]]
+
+        c_r1, c_r2 = st.columns(2)
+        for colonne, valeur, libelle, message in [
+            (c_r1, True, "🚫 Retirer le RPE obligatoire", "RPE obligatoire retiré pour {n} séance(s)."),
+            (c_r2, False, "✅ Remettre le RPE obligatoire", "RPE obligatoire remis pour {n} séance(s)."),
+        ]:
+            with colonne:
+                if st.button(libelle, key=f"btn_rpe_{valeur}", disabled=not ids_cibles, type="primary" if valeur else "secondary"):
+                    try:
+                        supabase.table("events").update({"rpe_desactive": valeur}).in_("id", ids_cibles).execute()
+                        flash_succes(message.format(n=len(ids_cibles)))
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Impossible d'enregistrer : {ex}")
+                        st.info("Si l'erreur parle d'une colonne « rpe_desactive » inconnue, exécutez une fois ceci dans Supabase (SQL Editor) puis réessayez :")
+                        st.code("alter table events add column if not exists rpe_desactive boolean default false;", language="sql")
+
+        retires = [e for e in evs_rpe if e.get("rpe_desactive")]
+        if retires:
+            st.markdown("#### Séances dont le RPE est retiré")
+            st.dataframe(pd.DataFrame([{"Athlète": inv_rpe.get(e.get("athlete_id"), "?"), "Séance": e.get("title"), "Date": fmt_date_fr(e.get("start_time"), True)} for e in retires]),
+                         use_container_width=True, hide_index=True)
 
     with tab_repondre:
         athletes = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
@@ -2188,25 +2289,24 @@ elif menu == "📊 Analytique":
     teams_all = supabase.table("teams").select("*").execute().data or []
     dict_teams_an = {t["name"]: t["id"] for t in teams_all}
 
-    mode_analyse = st.radio("Analyser :", ["👤 Un joueur", "👥 Une équipe", "🆚 Plusieurs joueurs"], horizontal=True, key="rad_mode_analytique")
+    mode_analyse = st.radio("Analyser :", ["👤 Joueurs", "👥 Équipe"], horizontal=True, key="rad_mode_analytique")
     scope_ids, mode_key, nom_scope = [], "joueur", ""
 
-    if mode_analyse == "👤 Un joueur":
-        j = st.selectbox("Joueur :", sorted(dict_athletes.keys()), key="sel_j_analytique")
-        if j:
-            scope_ids, mode_key, nom_scope = [dict_athletes[j]], "joueur", j
-    elif mode_analyse == "👥 Une équipe":
+    if mode_analyse == "👤 Joueurs":
+        liste_j = sorted(dict_athletes.keys())
+        noms_sel = st.multiselect("Joueur(s) — un seul ou plusieurs :", liste_j, default=liste_j[:1], key="multisel_j_analytique")
+        scope_ids = [dict_athletes[n] for n in noms_sel]
+        mode_key = "joueur" if len(noms_sel) == 1 else "multi"
+        nom_scope = noms_sel[0] if len(noms_sel) == 1 else "Joueurs sélectionnés"
+    else:
         eq = st.selectbox("Équipe :", sorted(dict_teams_an.keys()), key="sel_eq_analytique")
         if eq:
             tid = dict_teams_an[eq]
             scope_ids = [p["id"] for p in profiles if p.get("team_id") == tid and p.get("role") == "athlete"]
             mode_key, nom_scope = "equipe", eq
-    else:
-        noms_sel = st.multiselect("Joueurs :", sorted(dict_athletes.keys()), key="multisel_cmp_analytique")
-        scope_ids, mode_key, nom_scope = [dict_athletes[n] for n in noms_sel], "multi", "Joueurs sélectionnés"
 
     if not scope_ids:
-        st.info("Sélectionnez un joueur, une équipe ou plusieurs joueurs.")
+        st.info("Sélectionnez au moins un joueur, ou une équipe.")
         st.stop()
 
     scope_set = set(scope_ids)
