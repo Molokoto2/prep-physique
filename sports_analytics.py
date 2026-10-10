@@ -699,24 +699,35 @@ def _est_oui(v):
     return str(v).strip().lower() in ("oui", "yes", "true", "1", "1.0")
 
 
+def est_blesse(answers):
+    """Blessure « Oui » ou douleur localisée (réponses de la page Présence & Blessures)."""
+    answers = answers or {}
+    return _est_oui(answers.get(LABEL_BLESSURE_PRES)) or reponse_douleur_significative(answers.get(LABEL_DOULEUR_PRES))
+
+
+def _raison_blessure(answers):
+    if _est_oui(answers.get(LABEL_BLESSURE_PRES)):
+        return "Blessure"
+    return f"Douleur : {str(answers.get(LABEL_DOULEUR_PRES)).strip()}"
+
+
 def statut_presence(answers):
     """
     ('disponible' | 'absent' | 'indispo' | 'sans_reponse', raison)
-    - Présence = Non                       -> absent
-    - Blessure = Oui ou douleur localisée  -> indispo (blessé / douleur)
-    - Présence Oui, blessure Non, douleur Non/Aucune/Rien -> disponible
+    - disponible : présent, sans blessure ni douleur            -> compté dans l'effectif de la séance
+    - absent     : répond Présence = Non (raison = blessure / douleur si blessé)
+    - indispo    : PRÉSENT mais avec blessure ou douleur        -> présent en réathlétisation
+    - sans_reponse : n'a pas encore répondu
     """
     answers = answers or {}
     presence = answers.get(LABEL_PRESENCE)
     if presence in (None, ""):
         return "sans_reponse", "Pas encore répondu"
+    blesse = est_blesse(answers)
     if not _est_oui(presence):
-        return "absent", "Absent"
-    if _est_oui(answers.get(LABEL_BLESSURE_PRES)):
-        return "indispo", "Blessure"
-    douleur = answers.get(LABEL_DOULEUR_PRES)
-    if reponse_douleur_significative(douleur):
-        return "indispo", f"Douleur : {str(douleur).strip()}"
+        return "absent", (_raison_blessure(answers) if blesse else "Absent")
+    if blesse:
+        return "indispo", _raison_blessure(answers)
     return "disponible", ""
 
 
@@ -736,14 +747,27 @@ def obtenir_reponses_events(event_ids):
 
 
 def calculer_effectif(events_groupe, reponses_par_event, noms):
-    """Effectif d'une séance : listes de joueurs disponibles / absents / indisponibles / sans réponse."""
+    """
+    Effectif d'une séance : listes de joueurs
+    disponible (présents) / absent / indispo (présents en réathlétisation) / sans_reponse.
+    Chaque joueur : {athlete_id, nom, raison, blesse}.
+    """
     out = {"disponible": [], "absent": [], "indispo": [], "sans_reponse": []}
     for ev in events_groupe:
-        statut, raison = statut_presence(reponses_par_event.get(ev.get("id"), {}))
-        out[statut].append({"athlete_id": ev.get("athlete_id"), "nom": noms.get(ev.get("athlete_id"), "?"), "raison": raison})
+        answers = reponses_par_event.get(ev.get("id"), {})
+        statut, raison = statut_presence(answers)
+        out[statut].append({"athlete_id": ev.get("athlete_id"), "nom": noms.get(ev.get("athlete_id"), "?"),
+                            "raison": raison, "blesse": est_blesse(answers)})
     for lst in out.values():
         lst.sort(key=lambda x: x["nom"])
     return out
+
+
+def resume_effectif(eff):
+    """Chiffres clés : présents, absents (dont blessés), présents en réathlétisation, sans réponse."""
+    return {"presents": len(eff["disponible"]), "absents": len(eff["absent"]),
+            "absents_blesses": len([x for x in eff["absent"] if x["blesse"]]),
+            "rehab": len(eff["indispo"]), "sans_reponse": len(eff["sans_reponse"])}
 
 
 # =====================================================================
@@ -1101,17 +1125,40 @@ def filtrer_periode(df, debut=None, fin=None):
     return df[masque]
 
 
-def stats_par_question(df):
-    """Moyenne (et min / max / nombre de réponses) de chaque question numérique."""
+def stats_par_question(df, afficher_joueur=False):
+    """
+    Une ligne par question : moyenne / min / max pour les réponses numériques,
+    et les dernières réponses pour les questions texte (douleurs, commentaires...).
+    """
+    cols = ["Question", "Type", "Moyenne", "Min", "Max", "Nb réponses", "Réponses texte"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+    base = df[~df["Question"].isin((LABEL_PRESENCE, LABEL_BLESSURE_PRES))]
+    lignes = []
+    for q, g in base.groupby("Question", sort=True):
+        num = g[g["Valeur_num"].notna()]
+        txt = g[g["Valeur_num"].isna()]
+        if q == LABEL_DOULEUR_PRES:
+            txt = txt[txt["Valeur"].apply(reponse_douleur_significative)]
+        if len(num) and len(num) >= len(txt):
+            lignes.append({"Question": q, "Type": "Numérique", "Moyenne": round(float(num["Valeur_num"].mean()), 2),
+                           "Min": round(float(num["Valeur_num"].min()), 2), "Max": round(float(num["Valeur_num"].max()), 2),
+                           "Nb réponses": int(len(num)), "Réponses texte": ""})
+        elif len(txt):
+            recents = txt.sort_values("DateObj", ascending=False, na_position="last").head(6)
+            liste = [f"{r['Valeur']}" + (f" ({r['Joueur']})" if afficher_joueur else "") for _, r in recents.iterrows()]
+            lignes.append({"Question": q, "Type": "Texte", "Moyenne": None, "Min": None, "Max": None,
+                           "Nb réponses": int(len(txt)), "Réponses texte": " · ".join(liste)})
+    return pd.DataFrame(lignes, columns=cols)
+
+
+def reponses_texte(df):
+    """Toutes les réponses texte (hors présence / blessure Oui-Non, hors « aucune douleur »)."""
     if df is None or df.empty:
         return pd.DataFrame()
-    num = df[df["Valeur_num"].notna() & ~df["Question"].isin(LABELS_PRESENCE)]
-    if num.empty:
-        return pd.DataFrame()
-    g = num.groupby("Question")["Valeur_num"].agg(["mean", "min", "max", "count"]).reset_index()
-    g.columns = ["Question", "Moyenne", "Min", "Max", "Nb réponses"]
-    g[["Moyenne", "Min", "Max"]] = g[["Moyenne", "Min", "Max"]].round(2)
-    return g
+    t = df[df["Valeur_num"].isna() & ~df["Question"].isin((LABEL_PRESENCE, LABEL_BLESSURE_PRES))]
+    masque = ~((t["Question"] == LABEL_DOULEUR_PRES) & ~t["Valeur"].apply(reponse_douleur_significative))
+    return t[masque]
 
 
 def table_rpe_vs_cible(df_resp, events_by_id):
@@ -1140,3 +1187,25 @@ def table_rpe_vs_cible(df_resp, events_by_id):
                     "Nb réponses": len(d["vals"])})
     df = pd.DataFrame(out, columns=cols)
     return df.sort_values("DateObj") if not df.empty else df
+
+
+LIBELLE_CIBLE = "🎯 RPE cible"
+
+
+def construire_df_cible(events_by_id, noms, debut=None, fin=None):
+    """Une ligne par séance ayant un RPE cible (même format que construire_df_reponses)."""
+    rows = []
+    for ev in events_by_id.values():
+        if ev.get("target_rpe") is None:
+            continue
+        d = _date_obj(ev.get("start_time"))
+        if not d or (debut and d < debut) or (fin and d > fin):
+            continue
+        try:
+            v = float(ev["target_rpe"])
+        except (ValueError, TypeError):
+            continue
+        rows.append({"Joueur": noms.get(ev.get("athlete_id"), ""), "athlete_id": ev.get("athlete_id"), "event_id": ev.get("id"),
+                     "Séance": ev.get("title") or "—", "DateObj": d, "Date": d.strftime("%d/%m/%Y"),
+                     "Question": LIBELLE_CIBLE, "Valeur": f"{v:g}", "Valeur_num": v})
+    return pd.DataFrame(rows, columns=["Joueur", "athlete_id", "event_id", "Séance", "DateObj", "Date", "Question", "Valeur", "Valeur_num"])
