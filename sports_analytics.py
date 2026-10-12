@@ -317,15 +317,35 @@ def obtenir_rapports_gps(athlete_id=None, event_id=None):
     return rapports
 
 # Fonctions annexes d'authentification et gestion de comptes
+def _message_connexion(e):
+    msg = str(e)
+    bas = msg.lower()
+    if "invalid login" in bas or "invalid credentials" in bas:
+        return "E-mail ou mot de passe incorrect."
+    if "email not confirmed" in bas:
+        return "Adresse e-mail non confirmée : confirmez-la depuis le message reçu."
+    return f"Connexion impossible : {msg}"
+
 def connexion(email, password):
+    """Connexion + lecture du profil (avec nouvelles tentatives : le 1er appel échouait parfois juste après l'ouverture de session)."""
+    import time as _t
     try:
-        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        if res.session and res.user:
-            prof = supabase.table("profiles").select("*").eq("id", res.user.id).single().execute()
-            return res.session, prof.data, None
+        res = supabase.auth.sign_in_with_password({"email": email.strip(), "password": password})
     except Exception as e:
-        return None, None, str(e)
-    return None, None, "Identifiants invalides."
+        return None, None, _message_connexion(e)
+    if not (res.session and res.user):
+        return None, None, "Identifiants invalides."
+    derniere = None
+    for essai in range(4):
+        try:
+            r = supabase.table("profiles").select("*").eq("id", res.user.id).execute()
+            if r.data:
+                return res.session, r.data[0], None
+            derniere = "aucun profil associé à ce compte"
+        except Exception as e:
+            derniere = str(e)
+        _t.sleep(0.4 * (essai + 1))
+    return None, None, f"Compte trouvé mais profil illisible ({derniere}). Réessayez ; si cela persiste, vérifiez la ligne de ce compte dans la table `profiles`."
 
 def deconnexion():
     try:
@@ -333,14 +353,23 @@ def deconnexion():
     except:
         pass
 
-def creer_compte(email, password, full_name, role, team_id=None):
+def creer_compte(email, password, full_name, role, team_id=None, created_by=None):
     try:
         res = supabase.auth.sign_up({"email": email, "password": password})
         if res.user:
             data = {"id": res.user.id, "full_name": full_name, "role": role}
             if team_id:
                 data["team_id"] = team_id
-            supabase.table("profiles").insert(data).execute()
+            if created_by:
+                data["created_by"] = created_by
+            try:
+                supabase.table("profiles").insert(data).execute()
+            except Exception:
+                if "created_by" not in data:
+                    raise
+                data.pop("created_by")  # colonne absente : on crée quand même le compte
+                supabase.table("profiles").insert(data).execute()
+                return True, "Compte créé, mais sans coach propriétaire (colonne `created_by` absente : exécutez le script SQL)."
             return True, "Compte créé avec succès !"
     except Exception as e:
         return False, str(e)
@@ -385,8 +414,14 @@ def supprimer_profil_athlete(athlete_id):
     except:
         return False
 
-def creer_equipe(name):
+def creer_equipe(name, created_by=None):
     try:
+        if created_by:
+            try:
+                supabase.table("teams").insert({"name": name, "created_by": created_by}).execute()
+                return True
+            except Exception:
+                pass
         supabase.table("teams").insert({"name": name}).execute()
         return True
     except:
@@ -711,7 +746,7 @@ def _raison_blessure(answers):
     return f"Douleur : {str(answers.get(LABEL_DOULEUR_PRES)).strip()}"
 
 
-def statut_presence(answers):
+def statut_presence(answers, presence_off=False, blessure_off=False):
     """
     ('disponible' | 'absent' | 'indispo' | 'sans_reponse', raison)
     - disponible : présent, sans blessure ni douleur            -> compté dans l'effectif de la séance
@@ -721,9 +756,11 @@ def statut_presence(answers):
     """
     answers = answers or {}
     presence = answers.get(LABEL_PRESENCE)
-    if presence in (None, ""):
+    if presence_off:
+        presence = "Oui"  # question retirée par le coach : le joueur est considéré présent
+    elif presence in (None, ""):
         return "sans_reponse", "Pas encore répondu"
-    blesse = est_blesse(answers)
+    blesse = False if blessure_off else est_blesse(answers)
     if not _est_oui(presence):
         return "absent", (_raison_blessure(answers) if blesse else "Absent")
     if blesse:
@@ -755,9 +792,10 @@ def calculer_effectif(events_groupe, reponses_par_event, noms):
     out = {"disponible": [], "absent": [], "indispo": [], "sans_reponse": []}
     for ev in events_groupe:
         answers = reponses_par_event.get(ev.get("id"), {})
-        statut, raison = statut_presence(answers)
+        p_off, b_off = bool(ev.get("presence_desactive")), bool(ev.get("blessure_desactive"))
+        statut, raison = statut_presence(answers, p_off, b_off)
         out[statut].append({"athlete_id": ev.get("athlete_id"), "nom": noms.get(ev.get("athlete_id"), "?"),
-                            "raison": raison, "blesse": est_blesse(answers)})
+                            "raison": raison, "blesse": (not b_off) and est_blesse(answers)})
     for lst in out.values():
         lst.sort(key=lambda x: x["nom"])
     return out
@@ -863,15 +901,15 @@ def _inhabituel(v, historique, n_min, z_min, plancher_s, diff_min):
     return None
 
 
-def obtenir_donnees_alertes(coach_id=None):
-    """Séances du coach + réponses + GPS (historique complet, nécessaire aux comparaisons)."""
+def obtenir_donnees_alertes(athlete_ids=None, coach_id=None):
+    """Séances des athlètes du coach + réponses + GPS (historique complet, nécessaire aux comparaisons)."""
     try:
         events = supabase.table("events").select("*").execute().data or []
     except Exception as e:
         print(f"Erreur lecture séances (alertes) : {e}")
         events = []
-    if coach_id:
-        events = [e for e in events if e.get("coach_id") in (None, coach_id)]
+    if athlete_ids is not None:
+        events = [e for e in events if e.get("athlete_id") in athlete_ids]
     ids = [e["id"] for e in events]
     reponses, gps = [], []
     for i in range(0, len(ids), 80):
@@ -891,7 +929,8 @@ def obtenir_donnees_alertes(coach_id=None):
     return {"events": events, "reponses": reponses, "gps": gps,
             "questionnaires": _lire("questionnaires", "id, title, type, questions"),
             "profils": _lire("profiles", "id, full_name, role, team_id"),
-            "equipes": _lire("teams", "id, name")}
+            "equipes": _lire("teams", "id, name"),
+            "regles": (obtenir_regles_alertes(coach_id) or []) if coach_id else []}
 
 
 def calculer_alertes(donnees, jours=30, seuil_rpe_joueur=2.0, seuil_rpe_equipe=2.0, maintenant=None):
@@ -1055,6 +1094,47 @@ def calculer_alertes(donnees, jours=30, seuil_rpe_joueur=2.0, seuil_rpe_equipe=2
                 alertes.append({**_base(aid, ev), "cle": f"gps_stat|{g.get('id')}|{m}", "type": "gps_stat", "gravite": "moyenne",
                                 "message": f"GPS inhabituel : {LIBELLES_GPS[m]} = {v:g}, " + " ; ".join(raisons)})
 
+    # Alertes personnalisées créées par le coach
+    regles = [r for r in donnees.get("regles", []) if r.get("active", True) is not False]
+    if regles:
+        labels_r = {r["question_label"] for r in regles}
+        hist_r = defaultdict(list)
+        for r_, ev_, answers_ in parsed:
+            for label, val in answers_.items():
+                if label in labels_r:
+                    try:
+                        hist_r[(r_.get("athlete_id"), label)].append((parse_dt(ev_["start_time"]), float(val), r_["id"]))
+                    except (ValueError, TypeError):
+                        pass
+        for r, ev, answers in parsed:
+            dt_ev = parse_dt(ev["start_time"])
+            if dt_ev < limite:
+                continue
+            aid = r.get("athlete_id")
+            for regle in regles:
+                label = regle["question_label"]
+                if label not in answers:
+                    continue
+                try:
+                    v, seuil = float(answers[label]), float(regle["threshold"])
+                except (ValueError, TypeError):
+                    continue
+                cond, msg = regle.get("condition"), None
+                if cond == "sous" and v < seuil:
+                    msg = f"« {label} » = {v:g}, en dessous de {seuil:g}"
+                elif cond == "sur" and v > seuil:
+                    msg = f"« {label} » = {v:g}, au-dessus de {seuil:g}"
+                elif cond == "ecart":
+                    prev = [x[1] for x in hist_r[(aid, label)] if x[2] != r["id"] and x[0] < dt_ev]
+                    if len(prev) >= 3:
+                        m = sum(prev) / len(prev)
+                        if abs(v - m) >= seuil:
+                            msg = f"« {label} » = {v:g}, différent de sa moyenne habituelle ({m:.1f}) d'au moins {seuil:g}"
+                if msg:
+                    alertes.append({**_base(aid, ev), "cle": f"perso|{regle.get('id')}|{r['id']}", "type": "perso",
+                                    "gravite": regle.get("severity") or "moyenne",
+                                    "message": f"{regle.get('name') or 'Alerte personnalisée'} — {msg}"})
+
     ordre = {"haute": 0, "moyenne": 1}
     alertes.sort(key=lambda a: a["tri"], reverse=True)
     alertes.sort(key=lambda a: ordre.get(a["gravite"], 2))
@@ -1125,12 +1205,14 @@ def filtrer_periode(df, debut=None, fin=None):
     return df[masque]
 
 
-def stats_par_question(df, afficher_joueur=False):
+def stats_par_question(df, afficher_joueur=False, inclure_texte=False):
     """
     Une ligne par question : moyenne / min / max pour les réponses numériques,
     et les dernières réponses pour les questions texte (douleurs, commentaires...).
     """
     cols = ["Question", "Type", "Moyenne", "Min", "Max", "Nb réponses", "Réponses texte"]
+    if not inclure_texte:
+        cols = [c for c in cols if c not in ("Type", "Réponses texte")]
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
     base = df[~df["Question"].isin((LABEL_PRESENCE, LABEL_BLESSURE_PRES))]
@@ -1140,6 +1222,12 @@ def stats_par_question(df, afficher_joueur=False):
         txt = g[g["Valeur_num"].isna()]
         if q == LABEL_DOULEUR_PRES:
             txt = txt[txt["Valeur"].apply(reponse_douleur_significative)]
+        if not inclure_texte:
+            if len(num) and len(num) >= len(txt):
+                lignes.append({"Question": q, "Moyenne": round(float(num["Valeur_num"].mean()), 2),
+                               "Min": round(float(num["Valeur_num"].min()), 2), "Max": round(float(num["Valeur_num"].max()), 2),
+                               "Nb réponses": int(len(num))})
+            continue
         if len(num) and len(num) >= len(txt):
             lignes.append({"Question": q, "Type": "Numérique", "Moyenne": round(float(num["Valeur_num"].mean()), 2),
                            "Min": round(float(num["Valeur_num"].min()), 2), "Max": round(float(num["Valeur_num"].max()), 2),
@@ -1209,3 +1297,53 @@ def construire_df_cible(events_by_id, noms, debut=None, fin=None):
                      "Séance": ev.get("title") or "—", "DateObj": d, "Date": d.strftime("%d/%m/%Y"),
                      "Question": LIBELLE_CIBLE, "Valeur": f"{v:g}", "Valeur_num": v})
     return pd.DataFrame(rows, columns=["Joueur", "athlete_id", "event_id", "Séance", "DateObj", "Date", "Question", "Valeur", "Valeur_num"])
+
+
+# =====================================================================
+# ALERTES PERSONNALISÉES (une série de règles par coach)
+# =====================================================================
+CONDITIONS_ALERTE = {
+    "sous": "en dessous de",
+    "sur": "au-dessus de",
+    "ecart": "différente de sa moyenne habituelle d'au moins",
+}
+
+
+def decrire_regle(regle):
+    return f"« {regle.get('question_label')} » {CONDITIONS_ALERTE.get(regle.get('condition'), '?')} {float(regle.get('threshold') or 0):g}"
+
+
+def obtenir_regles_alertes(coach_id):
+    """Règles du coach. Renvoie None si la table `alert_rules` n'existe pas encore."""
+    try:
+        return supabase.table("alert_rules").select("*").eq("coach_id", coach_id).execute().data or []
+    except Exception as e:
+        print(f"Table alert_rules indisponible : {e}")
+        return None
+
+
+def creer_regle_alerte(coach_id, nom, questionnaire_id, question_label, condition, seuil, gravite="moyenne"):
+    try:
+        supabase.table("alert_rules").insert({
+            "coach_id": coach_id, "name": nom, "questionnaire_id": questionnaire_id, "question_label": question_label,
+            "condition": condition, "threshold": float(seuil), "severity": gravite, "active": True,
+        }).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def maj_regle_alerte(regle_id, **champs):
+    try:
+        supabase.table("alert_rules").update(champs).eq("id", regle_id).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def supprimer_regle_alerte(regle_id):
+    try:
+        supabase.table("alert_rules").delete().eq("id", regle_id).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
