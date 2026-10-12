@@ -49,12 +49,13 @@ from sports_analytics import (
     TITRE_RPE_AUTO,
     parse_dt, fmt_date_fr, cle_seance, groupes_seances,
     inserer_avec_repli, maj_avec_repli,
-    FORMAT_DOULEUR, FORMAT_PRESENCE, TITRE_PRESENCE_AUTO, LABEL_PRESENCE, LABELS_PRESENCE,
+    FORMAT_DOULEUR, FORMAT_PRESENCE, TITRE_PRESENCE_AUTO, LABEL_PRESENCE, LABEL_BLESSURE_PRES, LABEL_DOULEUR_PRES, LABELS_PRESENCE,
     est_questionnaire_auto, obtenir_ou_creer_presence_auto, statut_presence,
     obtenir_reponses_events, calculer_effectif, supprimer_assignation,
     LIBELLES_GPS, obtenir_donnees_alertes, calculer_alertes,
     construire_df_reponses, construire_df_gps, filtrer_periode, stats_par_question, table_rpe_vs_cible,
     resume_effectif, construire_df_cible, LIBELLE_CIBLE, reponses_texte,
+    obtenir_regles_alertes, creer_regle_alerte, maj_regle_alerte, supprimer_regle_alerte, CONDITIONS_ALERTE, decrire_regle,
 )
 
 NOMS_METRIQUES_GPS = {
@@ -219,6 +220,48 @@ st.markdown("""
 
     div[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; border: 1px solid var(--border-soft); }
     hr { border-color: var(--border-soft) !important; }
+
+    /* ===== Ouverture de la barre latérale : plus bas, plus grande, facile à toucher ===== */
+    [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
+        position: fixed !important;
+        top: 4.4rem !important;
+        left: 0.7rem !important;
+        z-index: 1000002 !important;
+        background: var(--bg-panel) !important;
+        border: 1px solid var(--accent) !important;
+        border-radius: 14px !important;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.5) !important;
+        padding: 2px !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] button, [data-testid="stExpandSidebarButton"], [data-testid="collapsedControl"] button {
+        min-width: 46px !important; min-height: 46px !important; color: var(--accent) !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] [data-testid="stExpandSidebarButton"] { position: static !important; }
+    header[data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stDecoration"] { display: none !important; }
+
+    /* ===== Mise en page plus aérée et plus moderne ===== */
+    .block-container { padding-top: 2.2rem !important; max-width: 1280px; }
+    div[data-testid="stAlert"] { border-radius: 12px !important; border: 1px solid var(--border-soft) !important; }
+    div[data-baseweb="tab-list"] { gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border-soft); }
+    div[data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+    div[data-testid="stMetric"] { box-shadow: 0 4px 14px rgba(0,0,0,0.25); }
+    .stButton>button, .stDownloadButton>button { min-height: 42px; }
+    h2 { font-size: 1.75rem !important; margin-bottom: 0.4rem !important; }
+    section[data-testid="stSidebar"] .stButton>button { width: 100%; }
+
+    /* ===== Téléphone ===== */
+    @media (max-width: 768px) {
+        .block-container { padding: 5.2rem 0.8rem 3rem 0.8rem !important; }
+        h2 { font-size: 1.4rem !important; }
+        h3 { font-size: 1.15rem !important; }
+        div[data-testid="stMetric"] { padding: 10px 12px; }
+        div[data-testid="stMetricValue"] { font-size: 1.35rem !important; }
+        button[data-baseweb="tab"] { padding: 8px 10px !important; font-size: 0.82rem !important; }
+        .stButton>button, .stDownloadButton>button { min-height: 48px; font-size: 0.95rem; }
+        div[data-testid="stExpander"] summary { padding: 0.7rem 0.8rem; }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label { padding: 13px 14px; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -264,6 +307,10 @@ def ecran_connexion():
                 st.error(erreur)
             else:
                 st.session_state.user_profile = profile
+                try:
+                    st.session_state["_auth_tokens"] = (session.access_token, session.refresh_token)
+                except Exception:
+                    pass
                 flash_succes(f"Bienvenue {profile.get('full_name', '')} !")
                 st.rerun()
 
@@ -277,7 +324,6 @@ mon_id = profil_connecte.get("id")
 
 st.sidebar.markdown("""
 <div class="brand-kicker">⚡ PERFORMANCE+</div>
-<div class="brand-tagline">Prép. physique & performance</div>
 """, unsafe_allow_html=True)
 st.sidebar.markdown(f"**👤 {profil_connecte.get('full_name', 'Utilisateur')}**")
 st.sidebar.caption(f"Rôle : {'🏋️ Coach' if role_connecte == 'coach' else '🏃 Athlète'}")
@@ -287,12 +333,6 @@ if st.sidebar.button("🚪 Se déconnecter", use_container_width=True):
     st.rerun()
 st.sidebar.markdown("---")
 
-st.markdown("""
-<div style="display:flex; align-items:baseline; gap:12px; margin-bottom: -10px;">
-    <span style="font-family:'Sora',sans-serif; font-weight:800; font-size:2.1em;">⚡ Performance+</span>
-    <span style="color:var(--text-dim); font-size:1em;">Suivi de performance</span>
-</div>
-""", unsafe_allow_html=True)
 
 if role_connecte == "coach":
     menu_options = [
@@ -466,6 +506,28 @@ alter table profiles add column if not exists position text;
 alter table profiles add column if not exists notes text;"""
 
 
+SQL_ALERTES = """create table if not exists alert_rules (
+  id uuid primary key default gen_random_uuid(),
+  coach_id uuid not null,
+  name text,
+  questionnaire_id uuid,
+  question_label text not null,
+  condition text not null,
+  threshold numeric not null,
+  severity text default 'moyenne',
+  active boolean default true,
+  created_at timestamptz default now()
+);
+alter table alert_rules enable row level security;
+create policy "coach_gere_regles_alertes" on alert_rules for all to authenticated
+using (exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'coach'))
+with check (exists (select 1 from profiles p where p.id = auth.uid() and p.role = 'coach'));"""
+
+SQL_PROPRIETAIRES = """alter table profiles add column if not exists created_by uuid;
+alter table teams add column if not exists created_by uuid;
+alter table questionnaires add column if not exists created_by uuid;"""
+
+
 def flash_succes(message, genre="succes"):
     """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
     st.session_state.setdefault("_flash", []).append((genre, message))
@@ -498,27 +560,73 @@ def aff_df(df, masquer=("athlete_id", "event_id", "DateObj")):
 # ---------------------------------------------------------------------
 # Coach : filtre des séances « à moi » (seulement s'il y a plusieurs coachs)
 # ---------------------------------------------------------------------
-def filtre_coach_id():
+def nb_coachs():
     if "_nb_coachs" not in st.session_state:
         try:
             st.session_state["_nb_coachs"] = len(supabase.table("profiles").select("id").eq("role", "coach").execute().data or [])
         except Exception:
             st.session_state["_nb_coachs"] = 1
-    return mon_id if st.session_state["_nb_coachs"] > 1 else None
+    return st.session_state["_nb_coachs"]
+
+
+def cloisonnement_actif():
+    """Le cloisonnement par coach exige la colonne `created_by` dans `profiles` (script SQL)."""
+    if "_colonne_created_by" not in st.session_state:
+        try:
+            lignes = supabase.table("profiles").select("*").limit(1).execute().data or []
+            st.session_state["_colonne_created_by"] = bool(lignes) and "created_by" in lignes[0]
+        except Exception:
+            st.session_state["_colonne_created_by"] = False
+    return st.session_state["_colonne_created_by"]
+
+
+def est_a_moi(ligne):
+    """Athlète / équipe / questionnaire créé par le coach connecté (ou ancien contenu sans propriétaire, s'il n'y a qu'un coach)."""
+    if not cloisonnement_actif():
+        return True
+    proprietaire = ligne.get("created_by")
+    if proprietaire in (None, ""):
+        return nb_coachs() <= 1
+    return proprietaire == mon_id
+
+
+def mes_athletes():
+    return [p for p in (supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []) if est_a_moi(p)]
+
+
+def mes_equipes():
+    return [t for t in (supabase.table("teams").select("*").execute().data or []) if est_a_moi(t)]
+
+
+def ids_mes_athletes():
+    return {p["id"] for p in mes_athletes()}
 
 
 def mes_evenements(events):
-    cid = filtre_coach_id()
-    return [e for e in events if (not cid) or e.get("coach_id") in (None, cid)]
+    ids = ids_mes_athletes()
+    return [e for e in events if e.get("athlete_id") in ids]
+
+
+def mes_questionnaires(liste):
+    """Questionnaires du coach (+ les questionnaires automatiques, communs à tous)."""
+    return [q for q in liste if est_questionnaire_auto(q) or est_a_moi(q)]
+
+
+def athletes_sans_proprietaire():
+    """Athlètes sans coach propriétaire (anciens comptes), à rattacher quand il y a plusieurs coachs."""
+    if not cloisonnement_actif():
+        return []
+    return [p for p in (supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []) if p.get("created_by") in (None, "")]
 
 
 # ---------------------------------------------------------------------
 # Alertes
 # ---------------------------------------------------------------------
 ICONES_ALERTES = {"douleur": "🩹", "blessure": "🚑", "rpe_joueur": "🔥", "rpe_equipe": "👥",
-                  "wellness_stat": "📉", "gps_stat": "🛰️"}
+                  "wellness_stat": "📉", "gps_stat": "🛰️", "perso": "⚙️"}
 NOMS_ALERTES = {"douleur": "Douleur musculaire", "blessure": "Blessure", "rpe_joueur": "RPE joueur vs cible",
-                "rpe_equipe": "RPE équipe vs cible", "wellness_stat": "Réponse wellness extrême", "gps_stat": "GPS inhabituel"}
+                "rpe_equipe": "RPE équipe vs cible", "wellness_stat": "Réponse wellness extrême", "gps_stat": "GPS inhabituel",
+                "perso": "Mes alertes personnalisées"}
 
 
 def get_alertes_coach(force=False):
@@ -529,7 +637,7 @@ def get_alertes_coach(force=False):
     cache = st.session_state.get("_cache_alertes")
     if not force and cache and cache["cle"] == cle and (time.time() - cache["t"]) < 90:
         return cache["data"]
-    donnees = obtenir_donnees_alertes(filtre_coach_id())
+    donnees = obtenir_donnees_alertes(ids_mes_athletes(), mon_id)
     data = calculer_alertes(donnees, jours, sj, se, maintenant=maintenant_local())
     st.session_state["_cache_alertes"] = {"cle": cle, "t": time.time(), "data": data}
     return data
@@ -595,7 +703,7 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
 
     # ---------------- Réponses par question : moyennes + réponses texte ----------------
     with tab_q:
-        stats = stats_par_question(df_resp, afficher_joueur=(mode != "joueur"))
+        stats = stats_par_question(df_resp)
         if df_resp.empty:
             st.info("Aucune réponse sur cette période.")
         else:
@@ -605,7 +713,7 @@ def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, n
             if stats.empty:
                 st.info("Aucune réponse à afficher sur cette période.")
             else:
-                st.caption("Questions numériques : moyenne, min et max. Questions texte : dernières réponses données.")
+                st.caption("Moyenne, min et max de chaque question numérique. Les réponses texte sont détaillées plus bas.")
                 st.dataframe(stats, use_container_width=True, hide_index=True)
                 st.download_button("📥 Exporter les moyennes et réponses (CSV)", data=stats.to_csv(index=False).encode("utf-8"), file_name="reponses_par_question.csv", mime="text/csv", key=f"{prefix}_dl_moy")
                 if mode in ("equipe", "multi"):
@@ -899,12 +1007,11 @@ if menu == "📅 Planning & Séances":
     st.header("📅 Planning & Séances")
     afficher_flash()
 
-    res_athletes = supabase.table("profiles").select("id, full_name, team_id").eq("role", "athlete").execute()
-    athletes_list = res_athletes.data if res_athletes.data else []
+    athletes_list = mes_athletes()
     dict_athletes = {a.get("full_name", f"Athlète {a['id']}"): a["id"] for a in athletes_list if a.get("full_name")}
     noms_by_id = {v: k for k, v in dict_athletes.items()}
 
-    teams_list_all = supabase.table("teams").select("*").execute().data or []
+    teams_list_all = mes_equipes()
     dict_teams_all = {t["name"]: t["id"] for t in teams_list_all}
 
     statuts = get_statuts_disponibilite()
@@ -1208,50 +1315,111 @@ if menu == "📅 Planning & Séances":
 elif menu == "🔔 Alertes":
     st.header("🔔 Alertes")
     afficher_flash()
-    st.caption("Douleurs musculaires, blessures, RPE trop éloigné du RPE cible, réponses wellness et données GPS extrêmes (très éloignées du groupe ou des valeurs habituelles du joueur).")
+    st.caption("Douleurs musculaires, blessures, RPE trop éloigné du RPE cible, réponses wellness et données GPS extrêmes, et vos propres alertes personnalisées.")
+    tab_al, tab_regles = st.tabs(["🔔 Mes alertes", "⚙️ Alertes personnalisées"])
 
-    with st.expander("⚙️ Réglages des alertes"):
-        opts_jours = [7, 14, 30, 60, 90]
-        jours_sel = st.selectbox("Période analysée :", opts_jours, index=opts_jours.index(st.session_state.get("_al_jours", 30)) if st.session_state.get("_al_jours", 30) in opts_jours else 2,
-                                 format_func=lambda j: f"{j} derniers jours", key="al_w_jours")
-        seuil_j = st.number_input("RPE d'un joueur : alerte si l'écart avec le RPE cible est d'au moins", 0.5, 9.0, float(st.session_state.get("_al_seuil_j", 2.0)), 0.5, key="al_w_sj")
-        seuil_e = st.number_input("RPE moyen d'un groupe : alerte si l'écart avec le RPE cible est d'au moins", 0.5, 9.0, float(st.session_state.get("_al_seuil_e", 2.0)), 0.5, key="al_w_se")
-        st.session_state["_al_jours"], st.session_state["_al_seuil_j"], st.session_state["_al_seuil_e"] = jours_sel, seuil_j, seuil_e
+    with tab_al:
+        with st.expander("⚙️ Réglages des alertes"):
+            opts_jours = [7, 14, 30, 60, 90]
+            jours_sel = st.selectbox("Période analysée :", opts_jours, index=opts_jours.index(st.session_state.get("_al_jours", 30)) if st.session_state.get("_al_jours", 30) in opts_jours else 2,
+                                     format_func=lambda j: f"{j} derniers jours", key="al_w_jours")
+            seuil_j = st.number_input("RPE d'un joueur : alerte si l'écart avec le RPE cible est d'au moins", 0.5, 9.0, float(st.session_state.get("_al_seuil_j", 2.0)), 0.5, key="al_w_sj")
+            seuil_e = st.number_input("RPE moyen d'un groupe : alerte si l'écart avec le RPE cible est d'au moins", 0.5, 9.0, float(st.session_state.get("_al_seuil_e", 2.0)), 0.5, key="al_w_se")
+            st.session_state["_al_jours"], st.session_state["_al_seuil_j"], st.session_state["_al_seuil_e"] = jours_sel, seuil_j, seuil_e
 
-    c_a1, c_a2, c_a3 = st.columns([2, 1, 1])
-    with c_a1:
-        types_sel = st.multiselect("Types d'alertes :", list(NOMS_ALERTES.keys()), default=list(NOMS_ALERTES.keys()),
-                                   format_func=lambda t: f"{ICONES_ALERTES[t]} {NOMS_ALERTES[t]}", key="al_w_types")
-    with c_a2:
-        afficher_vues = st.checkbox("Afficher aussi les alertes vues", value=False, key="al_w_vues")
-    with c_a3:
-        actualiser = st.button("🔄 Actualiser", use_container_width=True, key="al_btn_refresh")
+        c_a1, c_a2, c_a3 = st.columns([2, 1, 1])
+        with c_a1:
+            types_sel = st.multiselect("Types d'alertes :", list(NOMS_ALERTES.keys()), default=list(NOMS_ALERTES.keys()),
+                                       format_func=lambda t: f"{ICONES_ALERTES[t]} {NOMS_ALERTES[t]}", key="al_w_types")
+        with c_a2:
+            afficher_vues = st.checkbox("Afficher aussi les alertes vues", value=False, key="al_w_vues")
+        with c_a3:
+            actualiser = st.button("🔄 Actualiser", use_container_width=True, key="al_btn_refresh")
 
-    toutes = get_alertes_coach(force=actualiser)
-    vues = st.session_state.setdefault("alertes_vues", set())
-    affichees = [a for a in toutes if a["type"] in types_sel and (afficher_vues or a["cle"] not in vues)]
+        toutes = get_alertes_coach(force=actualiser)
+        vues = st.session_state.setdefault("alertes_vues", set())
+        affichees = [a for a in toutes if a["type"] in types_sel and (afficher_vues or a["cle"] not in vues)]
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Alertes à traiter", len([a for a in toutes if a["cle"] not in vues]))
-    m2.metric("🔴 Priorité haute", len([a for a in toutes if a["gravite"] == "haute" and a["cle"] not in vues]))
-    m3.metric("Déjà vues", len([a for a in toutes if a["cle"] in vues]))
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Alertes à traiter", len([a for a in toutes if a["cle"] not in vues]))
+        m2.metric("🔴 Priorité haute", len([a for a in toutes if a["gravite"] == "haute" and a["cle"] not in vues]))
+        m3.metric("Déjà vues", len([a for a in toutes if a["cle"] in vues]))
 
-    if not affichees:
-        st.success("Aucune alerte à afficher. 👌")
-    else:
-        if st.button("✔️ Tout marquer comme vu", key="al_btn_all_seen"):
-            vues.update(a["cle"] for a in affichees)
-            flash_succes(f"{len(affichees)} alerte(s) marquée(s) comme vue(s).")
-            st.rerun()
-        for a in affichees:
-            boite = st.error if a["gravite"] == "haute" else st.warning
-            etat = " *(vue)*" if a["cle"] in vues else ""
-            boite(f"{ICONES_ALERTES.get(a['type'], '⚠️')} **{a['athlete']}** — {a['seance']} ({a['date']}){etat}\n\n{a['message']}")
-            if a["cle"] not in vues:
-                if st.button("✔️ Marquer comme vue", key=f"al_seen_{hid(a['cle'])}"):
-                    vues.add(a["cle"])
+        if not affichees:
+            st.success("Aucune alerte à afficher. 👌")
+        else:
+            if st.button("✔️ Tout marquer comme vu", key="al_btn_all_seen"):
+                vues.update(a["cle"] for a in affichees)
+                flash_succes(f"{len(affichees)} alerte(s) marquée(s) comme vue(s).")
+                st.rerun()
+            for a in affichees:
+                boite = st.error if a["gravite"] == "haute" else st.warning
+                etat = " *(vue)*" if a["cle"] in vues else ""
+                boite(f"{ICONES_ALERTES.get(a['type'], '⚠️')} **{a['athlete']}** — {a['seance']} ({a['date']}){etat}\n\n{a['message']}")
+                if a["cle"] not in vues:
+                    if st.button("✔️ Marquer comme vue", key=f"al_seen_{hid(a['cle'])}"):
+                        vues.add(a["cle"])
+                        st.rerun()
+            st.caption("Les alertes marquées comme vues sont masquées pour cette session ; elles réapparaissent si vous vous reconnectez.")
+
+    with tab_regles:
+        st.subheader("➕ Créer une alerte à partir de vos questionnaires")
+        st.caption("Choisissez une question numérique d'un de vos questionnaires et la condition qui déclenche l'alerte. Exemple : « Alimentation » en dessous de 2, ou « Sommeil » différent de la moyenne habituelle du joueur d'au moins 2.")
+        regles = obtenir_regles_alertes(mon_id)
+        if regles is None:
+            st.warning("La table des alertes personnalisées n'existe pas encore. Exécutez ce SQL une seule fois dans Supabase (SQL Editor), puis rechargez la page :")
+            st.code(SQL_ALERTES, language="sql")
+        else:
+            qs_num = {}
+            for q in mes_questionnaires(supabase.table("questionnaires").select("*").execute().data or []):
+                if est_questionnaire_auto(q):
+                    continue
+                nums = [qq for qq in (q.get("questions") or []) if qq.get("format") in ("scale", "number") and qq.get("label")]
+                if nums:
+                    qs_num[q["title"]] = (q, nums)
+            if not qs_num:
+                st.info("Aucun de vos questionnaires ne contient de question numérique (échelle ou nombre). Créez-en un dans « 📝 Questionnaires ».")
+            else:
+                c_r1, c_r2 = st.columns(2)
+                q_titre = c_r1.selectbox("Questionnaire :", list(qs_num.keys()), key="regle_q")
+                q_obj_r, nums_r = qs_num[q_titre]
+                lab_r = c_r2.selectbox("Question :", [n["label"] for n in nums_r], key=f"regle_lab_{q_obj_r['id']}")
+                nd = next(n for n in nums_r if n["label"] == lab_r)
+                c_r3, c_r4, c_r5 = st.columns(3)
+                cond_r = c_r3.selectbox("Alerte si la réponse est :", list(CONDITIONS_ALERTE.keys()), format_func=lambda c: CONDITIONS_ALERTE[c], key="regle_cond")
+                smax = float(nd.get("scale_max") or 10) if nd.get("format") == "scale" else 1000.0
+                defaut = 2.0 if cond_r == "ecart" else float(round(min(smax, 10.0) / 2))
+                seuil_r = c_r4.number_input("Seuil", 0.0, smax, min(defaut, smax), 0.5, key=f"regle_seuil_{q_obj_r['id']}_{lab_r}_{cond_r}")
+                grav_r = c_r5.selectbox("Priorité :", ["moyenne", "haute"], format_func=lambda g: "🔴 Haute" if g == "haute" else "🟠 Moyenne", key="regle_grav")
+                nom_r = st.text_input("Nom de l'alerte (facultatif)", key="regle_nom", placeholder=f"Ex : {lab_r} trop bas")
+                st.info(f"Aperçu : une alerte sera créée dès qu'une réponse à « {lab_r} » est {CONDITIONS_ALERTE[cond_r]} {seuil_r:g}.")
+                if st.button("💾 Créer cette alerte", type="primary", key="btn_creer_regle"):
+                    ok_r, err_r = creer_regle_alerte(mon_id, nom_r.strip() or f"{lab_r} {CONDITIONS_ALERTE[cond_r]} {seuil_r:g}", q_obj_r["id"], lab_r, cond_r, seuil_r, grav_r)
+                    if ok_r:
+                        st.session_state.pop("_cache_alertes", None)
+                        flash_succes(f"Alerte personnalisée créée : « {lab_r} » {CONDITIONS_ALERTE[cond_r]} {seuil_r:g}.")
+                        st.rerun()
+                    else:
+                        st.error(f"Impossible de créer l'alerte : {err_r}")
+
+            st.markdown("---")
+            st.markdown("#### Mes alertes personnalisées")
+            if not regles:
+                st.caption("Aucune alerte personnalisée pour le moment.")
+            for r in regles:
+                c_l1, c_l2, c_l3 = st.columns([5, 1.6, 1.4])
+                c_l1.markdown(f"**{r.get('name') or 'Alerte'}**  \n{decrire_regle(r)} · {'🔴 haute' if r.get('severity') == 'haute' else '🟠 moyenne'}")
+                actif = c_l2.checkbox("Active", value=r.get("active", True) is not False, key=f"regle_act_{r['id']}")
+                if actif != (r.get("active", True) is not False):
+                    maj_regle_alerte(r["id"], active=actif)
+                    st.session_state.pop("_cache_alertes", None)
+                    flash_succes(f"Alerte « {r.get('name')} » {'activée' if actif else 'désactivée'}.")
                     st.rerun()
-        st.caption("Les alertes marquées comme vues sont masquées pour cette session ; elles réapparaissent si vous vous reconnectez.")
+                if c_l3.button("🗑️ Supprimer", key=f"regle_del_{r['id']}"):
+                    supprimer_regle_alerte(r["id"])
+                    st.session_state.pop("_cache_alertes", None)
+                    flash_succes(f"Alerte « {r.get('name')} » supprimée.")
+                    st.rerun()
 
 # =====================================================================
 # PAGE : EFFECTIF
@@ -1260,14 +1428,14 @@ elif menu == "👥 Effectif":
     st.header("👥 Effectif")
     afficher_flash()
 
-    teams_eff = supabase.table("teams").select("*").execute().data or []
+    teams_eff = mes_equipes()
     if not teams_eff:
         st.info("Aucune équipe. Créez-en une dans « ⚙️ Gestion des profils ».")
     else:
         dict_teams_eff = {t["name"]: t["id"] for t in teams_eff}
         eq_nom = st.selectbox("🛡️ Équipe :", sorted(dict_teams_eff.keys()), key="eff_equipe_sel")
         eq_id = dict_teams_eff[eq_nom]
-        tous_ath = supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []
+        tous_ath = mes_athletes()
         joueurs = sorted([p for p in tous_ath if p.get("team_id") == eq_id], key=lambda p: (p.get("full_name") or "").lower())
 
         COLS_INFO = ["jersey_number", "birth_date", "height_cm", "weight_kg", "position", "notes"]
@@ -1429,9 +1597,9 @@ elif menu == "📁 Fichiers & Rapports GPS":
     st.header("📁 Fichiers de Séances & Rapports GPS")
     afficher_flash()
 
-    res_athletes = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
+    res_athletes = mes_athletes()
     dict_athletes = {a.get("full_name"): a["id"] for a in res_athletes if a.get("full_name")}
-    res_events = supabase.table("events").select("*").order("start_time", desc=True).execute().data or []
+    res_events = mes_evenements(supabase.table("events").select("*").order("start_time", desc=True).execute().data or [])
 
     dict_events = {}
     dict_events_info = {}
@@ -1614,7 +1782,7 @@ elif menu == "📝 Questionnaires":
     st.header("📝 Gestion complète des Questionnaires")
     afficher_flash()
     st.caption("🤖 Deux questionnaires sont ajoutés automatiquement à chaque séance : « Présence & Blessures » (jusqu'au début de la séance) et « RPE » 1-10 (après la séance). Les questionnaires ci-dessous sont les vôtres.")
-    tab_creer, tab_gerer, tab_envoyer, tab_assignes, tab_rpe, tab_repondre = st.tabs(["🆕 Créer un modèle", "⚙️ Modifier / Supprimer", "📩 Assigner", "📋 Questionnaires assignés", "🚫 RPE obligatoire", "✍️ Saisie manuelle"])
+    tab_creer, tab_gerer, tab_envoyer, tab_assignes, tab_rpe, tab_repondre = st.tabs(["🆕 Créer un modèle", "⚙️ Modifier / Supprimer", "📩 Assigner", "📋 Questionnaires assignés", "🚫 Questionnaires obligatoires", "✍️ Saisie manuelle"])
 
     NOMS_FORMATS = {
         "scale": "Échelle numérique", "text": "Texte libre", "number": "Nombre libre",
@@ -1656,7 +1824,9 @@ elif menu == "📝 Questionnaires":
         if st.button("💾 Enregistrer le questionnaire complet", type="primary", key="btn_save_q_model"):
             if q_title and st.session_state.questions_draft:
                 try:
-                    supabase.table("questionnaires").insert({"title": q_title, "type": q_type, "questions": st.session_state.questions_draft}).execute()
+                    _, _ign, _err = inserer_avec_repli("questionnaires", [{"title": q_title, "type": q_type, "questions": st.session_state.questions_draft, "created_by": mon_id}], ["created_by"])
+                    if _err:
+                        raise Exception(_err)
                     st.session_state.questions_draft = []
                     flash_succes(f"Questionnaire « {q_title} » créé avec succès.")
                     st.rerun()
@@ -1667,7 +1837,7 @@ elif menu == "📝 Questionnaires":
 
     with tab_gerer:
         st.subheader("✏️ Modifier ou Supprimer un questionnaire existant")
-        q_list_all = [q for q in (supabase.table("questionnaires").select("*").execute().data or []) if not est_questionnaire_auto(q)]
+        q_list_all = [q for q in mes_questionnaires(supabase.table("questionnaires").select("*").execute().data or []) if not est_questionnaire_auto(q)]
         if not q_list_all:
             st.info("Aucun questionnaire créé.")
         else:
@@ -1713,9 +1883,9 @@ elif menu == "📝 Questionnaires":
 
     with tab_envoyer:
         st.subheader("📩 Assigner un questionnaire")
-        q_data = [q for q in (supabase.table("questionnaires").select("*").execute().data or []) if not est_questionnaire_auto(q)]
-        a_data = supabase.table("profiles").select("id, full_name, team_id").eq("role", "athlete").execute().data or []
-        t_data = supabase.table("teams").select("*").execute().data or []
+        q_data = [q for q in mes_questionnaires(supabase.table("questionnaires").select("*").execute().data or []) if not est_questionnaire_auto(q)]
+        a_data = mes_athletes()
+        t_data = mes_equipes()
         if not q_data:
             st.info("Créez d'abord un questionnaire.")
         elif not a_data:
@@ -1805,7 +1975,7 @@ elif menu == "📝 Questionnaires":
 
     with tab_assignes:
         st.subheader("📋 Questionnaires assignés")
-        q_tous = supabase.table("questionnaires").select("*").execute().data or []
+        q_tous = mes_questionnaires(supabase.table("questionnaires").select("*").execute().data or [])
         assignations = obtenir_assignations()
         profs = supabase.table("profiles").select("id, full_name").execute().data or []
         noms_assign = {p["id"]: p.get("full_name", "?") for p in profs}
@@ -1882,21 +2052,24 @@ elif menu == "📝 Questionnaires":
                 st.rerun()
 
     with tab_rpe:
-        st.subheader("🚫 RPE obligatoire après la séance")
+        st.subheader("🚫 Questionnaires obligatoires")
         st.caption(
-            "Par défaut, chaque athlète doit remplir son RPE (1-10) après chaque séance, dans l'heure qui suit. "
-            "Ici, vous pouvez retirer cette obligation pour un athlète sur une ou plusieurs séances, "
-            "ou pour tous les joueurs d'une séance. Vous pouvez aussi la remettre."
+            "Trois questionnaires sont obligatoires et automatiques pour chaque séance : 🌙 le RPE (après la séance), "
+            "✅ la présence et 🩹 les blessures & douleurs (avant la séance). Ici, vous pouvez en retirer un ou plusieurs "
+            "pour un athlète sur une ou plusieurs séances, ou pour tous les joueurs d'une séance. Vous pouvez aussi les remettre."
         )
-        ath_rpe = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
+        OBLIGATOIRES = {"🌙 RPE": "rpe_desactive", "✅ Présence": "presence_desactive", "🩹 Blessure & douleur": "blessure_desactive"}
+        choix_obl = st.multiselect("Questionnaire(s) obligatoire(s) concerné(s) :", list(OBLIGATOIRES.keys()), default=["🌙 RPE"], key="obl_choix")
+        ath_rpe = mes_athletes()
         dict_athletes_rpe = {a["full_name"]: a["id"] for a in ath_rpe if a.get("full_name")}
         inv_rpe = {v: k for k, v in dict_athletes_rpe.items()}
-        mode_rpe = st.radio("Retirer le RPE pour :", ["👤 Un athlète (une ou plusieurs séances)", "👥 Une séance entière (tous les joueurs)"],
+        mode_rpe = st.radio("Retirer pour :", ["👤 Un athlète (une ou plusieurs séances)", "👥 Une séance entière (tous les joueurs)"],
                             horizontal=True, key="rpe_mode_radio")
         evs_rpe = mes_evenements(supabase.table("events").select("*").order("start_time", desc=True).execute().data or [])
 
         def _lib_ev(e):
-            return f"{e.get('title', 'Séance')} — {fmt_date_fr(e.get('start_time'), True)}" + ("  🚫 RPE retiré" if e.get("rpe_desactive") else "")
+            retires = [nom.split(" ", 1)[1] for nom, col in OBLIGATOIRES.items() if e.get(col)]
+            return f"{e.get('title', 'Séance')} — {fmt_date_fr(e.get('start_time'), True)}" + (f"  🚫 retiré : {', '.join(retires)}" if retires else "")
 
         ids_cibles = []
         if not dict_athletes_rpe or not evs_rpe:
@@ -1917,35 +2090,40 @@ elif menu == "📝 Questionnaires":
 
         c_r1, c_r2 = st.columns(2)
         for colonne, valeur, libelle, message in [
-            (c_r1, True, "🚫 Retirer le RPE obligatoire", "RPE obligatoire retiré pour {n} séance(s)."),
-            (c_r2, False, "✅ Remettre le RPE obligatoire", "RPE obligatoire remis pour {n} séance(s)."),
+            (c_r1, True, "🚫 Retirer ces questionnaires", "{q} retiré(s) pour {n} séance(s)."),
+            (c_r2, False, "✅ Remettre ces questionnaires", "{q} remis pour {n} séance(s)."),
         ]:
             with colonne:
-                if st.button(libelle, key=f"btn_rpe_{valeur}", disabled=not ids_cibles, type="primary" if valeur else "secondary"):
+                if st.button(libelle, key=f"btn_rpe_{valeur}", disabled=not (ids_cibles and choix_obl), type="primary" if valeur else "secondary"):
                     try:
-                        supabase.table("events").update({"rpe_desactive": valeur}).in_("id", ids_cibles).execute()
-                        flash_succes(message.format(n=len(ids_cibles)))
+                        supabase.table("events").update({OBLIGATOIRES[c]: valeur for c in choix_obl}).in_("id", ids_cibles).execute()
+                        flash_succes(message.format(q=" + ".join(choix_obl), n=len(ids_cibles)))
                         st.rerun()
                     except Exception as ex:
                         st.error(f"Impossible d'enregistrer : {ex}")
-                        st.info("Si l'erreur parle d'une colonne « rpe_desactive » inconnue, exécutez une fois ceci dans Supabase (SQL Editor) puis réessayez :")
-                        st.code("alter table events add column if not exists rpe_desactive boolean default false;", language="sql")
+                        st.info("Si l'erreur parle d'une colonne inconnue, exécutez une fois ceci dans Supabase (SQL Editor) puis réessayez :")
+                        st.code("alter table events add column if not exists rpe_desactive boolean default false;\n"
+                                "alter table events add column if not exists presence_desactive boolean default false;\n"
+                                "alter table events add column if not exists blessure_desactive boolean default false;", language="sql")
 
-        retires = [e for e in evs_rpe if e.get("rpe_desactive")]
+        retires = [e for e in evs_rpe if any(e.get(c) for c in OBLIGATOIRES.values())]
         if retires:
-            st.markdown("#### Séances dont le RPE est retiré")
-            st.dataframe(pd.DataFrame([{"Athlète": inv_rpe.get(e.get("athlete_id"), "?"), "Séance": e.get("title"), "Date": fmt_date_fr(e.get("start_time"), True)} for e in retires]),
-                         use_container_width=True, hide_index=True)
+            st.markdown("#### Séances avec un questionnaire obligatoire retiré")
+            st.dataframe(pd.DataFrame([{
+                "Athlète": inv_rpe.get(e.get("athlete_id"), "?"), "Séance": e.get("title"), "Date": fmt_date_fr(e.get("start_time"), True),
+                "RPE retiré": "✓" if e.get("rpe_desactive") else "", "Présence retirée": "✓" if e.get("presence_desactive") else "",
+                "Blessure & douleur retirées": "✓" if e.get("blessure_desactive") else "",
+            } for e in retires]), use_container_width=True, hide_index=True)
 
     with tab_repondre:
-        athletes = supabase.table("profiles").select("id, full_name").eq("role", "athlete").execute().data or []
+        athletes = mes_athletes()
         dict_athletes = {a.get("full_name"): a["id"] for a in athletes if a.get("full_name")}
         if dict_athletes:
             sel_athlete_name = st.selectbox("Athlète :", list(dict_athletes.keys()), key="sel_ath_saisie_man")
             selected_athlete_id = dict_athletes[sel_athlete_name]
             events_ath = supabase.table("events").select("id, title, start_time").eq("athlete_id", selected_athlete_id).execute().data or []
             dict_events_rep = {f"{ev.get('title')} — {fmt_date_fr(ev.get('start_time'), True)}": ev["id"] for ev in events_ath}
-            q_list = supabase.table("questionnaires").select("*").execute().data or []
+            q_list = mes_questionnaires(supabase.table("questionnaires").select("*").execute().data or [])
             if dict_events_rep and q_list:
                 sel_event_label = st.selectbox("Séance :", list(dict_events_rep.keys()), key="sel_evt_saisie_man")
                 selected_event_id = dict_events_rep[sel_event_label]
@@ -1968,7 +2146,9 @@ elif menu == "📅 Séances à venir":
     )
 
     events_mine_raw = supabase.table("events").select("*").eq("athlete_id", mon_id).execute().data or []
-    q_all = supabase.table("questionnaires").select("*").execute().data or []
+    coach_de_lathlete = profil_connecte.get("created_by")
+    q_all = [q for q in (supabase.table("questionnaires").select("*").execute().data or [])
+             if est_questionnaire_auto(q) or q.get("created_by") in (None, "", coach_de_lathlete)]
     q_pre = [q for q in q_all if q.get("type") == "pre_event" and not est_questionnaire_auto(q)]
     q_auto = obtenir_ou_creer_rpe_auto()
     q_pres = obtenir_ou_creer_presence_auto()
@@ -2030,19 +2210,29 @@ elif menu == "📅 Séances à venir":
             reponses_deja = reponses_par_event.get(ev["id"], {})
 
             # ---- Présence / blessure / douleur : de la création jusqu'au début de la séance ----
+            q_pres_ev = None
             if q_pres:
+                labels_off = set()
+                if ev.get("presence_desactive"):
+                    labels_off.add(LABEL_PRESENCE)
+                if ev.get("blessure_desactive"):
+                    labels_off |= {LABEL_BLESSURE_PRES, LABEL_DOULEUR_PRES}
+                questions_ok = [qq for qq in (q_pres.get("questions") or []) if qq.get("label") not in labels_off]
+                if questions_ok:
+                    q_pres_ev = {**q_pres, "questions": questions_ok}
+            if q_pres_ev:
                 st.markdown("##### 🩹 Présence & blessures")
-                deja_pres = LABEL_PRESENCE in reponses_deja
+                deja_pres = any(qq.get("label") in reponses_deja for qq in q_pres_ev["questions"])
                 if maintenant >= d0:
                     st.caption("✅ Réponse enregistrée." if deja_pres else "⏱️ La séance a commencé : la présence ne peut plus être renseignée.")
                 else:
                     if deja_pres:
-                        statut_p, raison_p = statut_presence(reponses_deja)
+                        statut_p, raison_p = statut_presence(reponses_deja, ev.get("presence_desactive"), ev.get("blessure_desactive"))
                         st.caption({"disponible": "✅ Tu as répondu : présent(e) et disponible.", "absent": "❌ Tu as répondu : absent(e).",
                                     "indispo": f"🩹 Tu as répondu : indisponible ({raison_p}).", "sans_reponse": ""}[statut_p])
                     cle_p = f"pres_{ev['id']}_{q_pres['id']}"
                     if bouton_ouvrir("✏️ Modifier ma réponse présence / blessure" if deja_pres else "🩹 Répondre : présence, blessure, douleur", cle_p):
-                        rendre_formulaire_questionnaire(q_pres, ev["id"], cle_p, reponses_deja)
+                        rendre_formulaire_questionnaire(q_pres_ev, ev["id"], cle_p, reponses_deja)
 
             # ---- Wellness : uniquement dans la fenêtre [début - délai ; début[ ----
             q_pre_dispo = [q for q in q_pre if questionnaire_disponible_pour(q["id"], mon_id, ev["id"], assignations)]
@@ -2283,10 +2473,10 @@ elif menu == "📊 Analytique":
     st.header("📊 Analytique")
     afficher_flash()
 
-    profiles = supabase.table("profiles").select("*").execute().data or []
+    profiles = mes_athletes()
     dict_profiles = {p["id"]: p.get("full_name", "") for p in profiles}
     dict_athletes = {p.get("full_name"): p["id"] for p in profiles if p.get("role") == "athlete" and p.get("full_name")}
-    teams_all = supabase.table("teams").select("*").execute().data or []
+    teams_all = mes_equipes()
     dict_teams_an = {t["name"]: t["id"] for t in teams_all}
 
     mode_analyse = st.radio("Analyser :", ["👤 Joueurs", "👥 Équipe"], horizontal=True, key="rad_mode_analytique")
@@ -2332,10 +2522,25 @@ elif menu == "⚙️ Gestion des profils":
     tab_ath, tab_teams, tab_comptes = st.tabs(["👤 Athlètes & Tests", "🛡️ Équipes", "🔑 Comptes"])
 
     with tab_ath:
-        teams_data = supabase.table("teams").select("*").execute().data or []
+        if cloisonnement_actif() and nb_coachs() > 1:
+            orph_ath = athletes_sans_proprietaire()
+            orph_eq = [t for t in (supabase.table("teams").select("*").execute().data or []) if t.get("created_by") in (None, "")]
+            if orph_ath or orph_eq:
+                with st.expander(f"🧩 {len(orph_ath)} athlète(s) et {len(orph_eq)} équipe(s) sans coach propriétaire"):
+                    st.caption("Anciens comptes créés avant la mise en place des coachs propriétaires. Rattachez à votre compte ceux qui sont à vous : les autres coachs ne les verront plus.")
+                    ch_ath = st.multiselect("Athlètes à moi :", [p["id"] for p in orph_ath], format_func=lambda i: next(p.get("full_name") for p in orph_ath if p["id"] == i), key="orph_ath_sel")
+                    ch_eq = st.multiselect("Équipes à moi :", [t["id"] for t in orph_eq], format_func=lambda i: next(t.get("name") for t in orph_eq if t["id"] == i), key="orph_eq_sel")
+                    if st.button("📌 Me les attribuer", key="btn_orph", disabled=not (ch_ath or ch_eq)):
+                        if ch_ath:
+                            supabase.table("profiles").update({"created_by": mon_id}).in_("id", ch_ath).execute()
+                        if ch_eq:
+                            supabase.table("teams").update({"created_by": mon_id}).in_("id", ch_eq).execute()
+                        flash_succes(f"{len(ch_ath)} athlète(s) et {len(ch_eq)} équipe(s) rattaché(s) à votre compte.")
+                        st.rerun()
+        teams_data = mes_equipes()
         dict_teams_add = {t["name"]: t["id"] for t in teams_data}
         st.subheader("✏️ Modifier un athlète et ajouter des tests physiques")
-        ath_data = supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []
+        ath_data = mes_athletes()
         dict_ath_lookup = {a.get("full_name", f"Athlète {a['id']}"): a for a in ath_data}
 
         if dict_ath_lookup:
@@ -2383,13 +2588,13 @@ elif menu == "⚙️ Gestion des profils":
 
     with tab_teams:
         st.subheader("🛡️ Gérer, modifier les équipes et ses joueurs")
-        teams_list = supabase.table("teams").select("*").execute().data or []
+        teams_list = mes_equipes()
         
         st.markdown("##### ➕ Créer une nouvelle équipe")
         new_t = st.text_input("Nom de la nouvelle équipe", key="input_create_team_mgt")
         if st.button("Créer l'équipe", type="primary"):
             if new_t:
-                creer_equipe(new_t)
+                creer_equipe(new_t, created_by=mon_id)
                 flash_succes("Équipe créée !")
                 st.rerun()
 
@@ -2439,14 +2644,19 @@ elif menu == "⚙️ Gestion des profils":
                 new_role = "athlete"
             with c2:
                 new_full_name = st.text_input("Nom complet")
-                teams_data = supabase.table("teams").select("*").execute().data or []
+                teams_data = mes_equipes()
                 dict_teams_cpt = {t["name"]: t["id"] for t in teams_data}
                 new_team = st.selectbox("Équipe", ["Aucune"] + list(dict_teams_cpt.keys()))
 
             if st.form_submit_button("🚀 Créer le compte", type="primary"):
                 if new_email and new_password and new_full_name:
                     t_id = dict_teams_cpt.get(new_team) if new_team != "Aucune" else None
-                    ok, msg = creer_compte(new_email, new_password, new_full_name, new_role, t_id)
+                    ok, msg = creer_compte(new_email, new_password, new_full_name, new_role, t_id, created_by=mon_id)
+                    try:  # la création d'un compte peut ouvrir la session du nouvel athlète : on rétablit celle du coach
+                        if st.session_state.get("_auth_tokens"):
+                            supabase.auth.set_session(*st.session_state["_auth_tokens"])
+                    except Exception:
+                        pass
                     if ok: flash_succes(msg); st.rerun()
                     else: st.error(msg)
 
