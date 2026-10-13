@@ -26,10 +26,6 @@ def afficher_flash():
             st.success(message if str(message).startswith("✅") else f"✅ {message}")
 
 
-if st.sidebar.button("✖ Fermer le menu", use_container_width=True):
-    # Force le rechargement pour actualiser l'affichage
-    st.rerun()
-
 from sports_analytics import (
     supabase,
     SUPABASE_URL,
