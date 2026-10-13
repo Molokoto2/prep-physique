@@ -2760,3 +2760,43 @@ elif menu == "🔊 Générateur de Bips Audio":
             st.success("✅ Fichier sonore généré !")
             st.audio(audio_data, format="audio/wav")
             st.download_button("💾 Télécharger (.WAV)", data=audio_data, file_name="test_bips.wav", mime="audio/wav", use_container_width=True, key="dl_wav_audio")
+
+
+# =====================================================================
+# BOUTON PRATIQUE POUR OUVRIR / FERMER LA BARRE LATÉRALE (MOBILE & PC)
+# =====================================================================
+st.markdown("""
+<script>
+function toggleSidebar() {
+    // Recherche le bouton natif de repli de Streamlit ou simule un clic dessus
+    const sidebar = window.parent.document.querySelector('section[data-testid="stSidebar"]');
+    const collapseButton = window.parent.document.querySelector('button[data-testid="collapsedControl"]');
+    
+    // Si le bouton natif existe, on clique dessus
+    if (collapseButton) {
+        collapseButton.click();
+    } else {
+        // Alternative via l'API DOM de Streamlit si le bouton natif est masqué
+        const persistButton = window.parent.document.querySelector('[data-testid="stSidebarCollapsedControl"] button');
+        if (persistButton) {
+            persistButton.click();
+        }
+    }
+}
+</script>
+
+<div style="position: fixed; top: 1rem; left: 1rem; z-index: 999999;">
+    <button onclick="toggleSidebar()" style="
+        background-color: #131a2b;
+        color: #ff5a1f;
+        border: 1px solid #ff5a1f;
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-weight: bold;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    ">
+        📂 Menu / Barre latérale
+    </button>
+</div>
+""", unsafe_allow_html=True)
