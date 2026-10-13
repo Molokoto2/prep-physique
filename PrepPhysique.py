@@ -2767,36 +2767,52 @@ elif menu == "🔊 Générateur de Bips Audio":
 # =====================================================================
 st.markdown("""
 <script>
-function toggleSidebar() {
-    // Recherche le bouton natif de repli de Streamlit ou simule un clic dessus
-    const sidebar = window.parent.document.querySelector('section[data-testid="stSidebar"]');
-    const collapseButton = window.parent.document.querySelector('button[data-testid="collapsedControl"]');
-    
-    // Si le bouton natif existe, on clique dessus
-    if (collapseButton) {
-        collapseButton.click();
-    } else {
-        // Alternative via l'API DOM de Streamlit si le bouton natif est masqué
-        const persistButton = window.parent.document.querySelector('[data-testid="stSidebarCollapsedControl"] button');
-        if (persistButton) {
-            persistButton.click();
+// On attend que la page soit complètement chargée
+document.addEventListener("DOMContentLoaded", function() {
+    // Fonction globale appelée par le bouton
+    window.toggleSidebarStreamlit = function() {
+        // Recherche le bouton de réduction natif de Streamlit dans le header ou le document
+        const nativeButton = window.parent.document.querySelector('button[kind="header"] [data-testid="stIconMaterial"]') ||
+                             window.parent.document.querySelector('[data-testid="collapsedControl"]') ||
+                             window.parent.document.querySelector('button[aria-label="Collapse sidebar"]') ||
+                             window.parent.document.querySelector('button[aria-label="Expand sidebar"]');
+                             
+        if (nativeButton) {
+            // Remonte au bouton cliquable parent si nécessaire
+            let btn = nativeButton.closest('button');
+            if (btn) {
+                btn.click();
+            } else {
+                nativeButton.click();
+            }
+        } else {
+            // Solution de secours : cherche n'importe quel bouton de contrôle de la sidebar
+            const allButtons = window.parent.document.querySelectorAll('button');
+            for (let b of allButtons) {
+                if (b.getAttribute('aria-label') && b.getAttribute('aria-label').toLowerCase().includes('sidebar')) {
+                    b.click();
+                    break;
+                }
+            }
         }
-    }
-}
+    };
+});
 </script>
 
-<div style="position: fixed; top: 1rem; left: 1rem; z-index: 999999;">
-    <button onclick="toggleSidebar()" style="
+<div style="position: fixed; top: 4.5rem; left: 0.8rem; z-index: 999999;">
+    <button onclick="window.toggleSidebarStreamlit()" style="
         background-color: #131a2b;
         color: #ff5a1f;
         border: 1px solid #ff5a1f;
-        padding: 8px 12px;
-        border-radius: 10px;
-        font-weight: bold;
+        padding: 10px 14px;
+        border-radius: 12px;
+        font-family: 'Sora', sans-serif;
+        font-weight: 600;
+        font-size: 14px;
         cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     ">
-        📂 Menu / Barre latérale
+        📂 Menu
     </button>
 </div>
 """, unsafe_allow_html=True)
