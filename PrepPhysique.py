@@ -11,6 +11,21 @@ import os
 import hashlib
 import time
 
+
+def flash_succes(message, genre="succes"):
+    """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
+    st.session_state.setdefault("_flash", []).append((genre, message))
+
+def afficher_flash():
+    for genre, message in st.session_state.pop("_flash", []):
+        if genre == "erreur":
+            st.error(message)
+        elif genre == "avertissement":
+            st.warning(message)
+        else:
+            st.success(message if str(message).startswith("✅") else f"✅ {message}")
+
+
 from sports_analytics import (
     supabase,
     SUPABASE_URL,
