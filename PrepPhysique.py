@@ -11,7 +11,6 @@ import os
 import hashlib
 import time
 
-
 def flash_succes(message, genre="succes"):
     """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
     st.session_state.setdefault("_flash", []).append((genre, message))
@@ -24,7 +23,6 @@ def afficher_flash():
             st.warning(message)
         else:
             st.success(message if str(message).startswith("✅") else f"✅ {message}")
-
 
 from sports_analytics import (
     supabase,
@@ -85,6 +83,9 @@ NOMS_METRIQUES_GPS = {
     "duree_secondes": "Durée (secondes)",
 }
 
+# Gestion de l'état de la barre latérale via la session Streamlit
+if "sidebar_state" not in st.session_state:
+    st.session_state.sidebar_state = "expanded"
 
 st.set_page_config(
     page_title="Performance+ | Prép. Physique",
@@ -313,14 +314,6 @@ profil_connecte = st.session_state.user_profile
 role_connecte = profil_connecte.get("role", "athlete")
 mon_id = profil_connecte.get("id")
 
-# --- BOUTON NATIF POUR OUVRIR / FERMER LE MENU (EN HAUT DE LA SIDEBAR) ---
-if st.sidebar.button("📂 Ouvrir / Fermer le Menu", type="primary", use_container_width=True):
-    if st.session_state.sidebar_state == "expanded":
-        st.session_state.sidebar_state = "collapsed"
-    else:
-        st.session_state.sidebar_state = "expanded"
-    st.rerun()
-
 st.sidebar.markdown("""
 <div class="brand-kicker">⚡ PERFORMANCE+</div>
 """, unsafe_allow_html=True)
@@ -524,20 +517,6 @@ with check (exists (select 1 from profiles p where p.id = auth.uid() and p.role 
 SQL_PROPRIETAIRES = """alter table profiles add column if not exists created_by uuid;
 alter table teams add column if not exists created_by uuid;
 alter table questionnaires add column if not exists created_by uuid;"""
-
-
-def flash_succes(message, genre="succes"):
-    st.session_state.setdefault("_flash", []).append((genre, message))
-
-
-def afficher_flash():
-    for genre, message in st.session_state.pop("_flash", []):
-        if genre == "erreur":
-            st.error(message)
-        elif genre == "avertissement":
-            st.warning(message)
-        else:
-            st.success(message if str(message).startswith("✅") else f"✅ {message}")
 
 
 def date_fr(*args, **kwargs):
