@@ -85,9 +85,6 @@ NOMS_METRIQUES_GPS = {
     "duree_secondes": "Durée (secondes)",
 }
 
-# Gestion de l'état de la barre latérale via la session Streamlit
-if "sidebar_state" not in st.session_state:
-    st.session_state.sidebar_state = "expanded"
 
 st.set_page_config(
     page_title="Performance+ | Prép. Physique",
