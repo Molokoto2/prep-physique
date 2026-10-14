@@ -11,19 +11,6 @@ import os
 import hashlib
 import time
 
-def flash_succes(message, genre="succes"):
-    """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
-    st.session_state.setdefault("_flash", []).append((genre, message))
-
-def afficher_flash():
-    for genre, message in st.session_state.pop("_flash", []):
-        if genre == "erreur":
-            st.error(message)
-        elif genre == "avertissement":
-            st.warning(message)
-        else:
-            st.success(message if str(message).startswith("✅") else f"✅ {message}")
-
 from sports_analytics import (
     supabase,
     SUPABASE_URL,
@@ -232,7 +219,6 @@ st.markdown("""
     header[data-testid="stHeader"] { background: transparent !important; }
     [data-testid="stDecoration"] { display: none !important; }
 
-    /* ===== Mise en page plus aérée et plus moderne ===== */
     .block-container { padding-top: 2.2rem !important; max-width: 1280px; }
     div[data-testid="stAlert"] { border-radius: 12px !important; border: 1px solid var(--border-soft) !important; }
     div[data-baseweb="tab-list"] { gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border-soft); }
@@ -242,7 +228,6 @@ st.markdown("""
     h2 { font-size: 1.75rem !important; margin-bottom: 0.4rem !important; }
     section[data-testid="stSidebar"] .stButton>button { width: 100%; }
 
-    /* ===== Téléphone ===== */
     @media (max-width: 768px) {
         .block-container { padding: 5.2rem 0.8rem 3rem 0.8rem !important; }
         h2 { font-size: 1.4rem !important; }
@@ -419,7 +404,6 @@ MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "ao
 JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
 def maintenant_local():
-    """Heure actuelle en France (le serveur Streamlit tourne en UTC)."""
     try:
         from zoneinfo import ZoneInfo
         return datetime.now(ZoneInfo("Europe/Paris")).replace(tzinfo=None)
@@ -433,7 +417,6 @@ def _parser_datetime_event(ev, champ="start_time"):
         return None
 
 def afficher_fichiers_evenement(event_id, key_prefix=""):
-    """Affiche les documents (PDF / images) attachés à une séance."""
     fichiers = obtenir_fichiers_evenement(event_id)
     if not fichiers:
         return
@@ -483,9 +466,6 @@ def get_statuts_disponibilite():
         st.session_state.cache_statuts_dispo = calculer_statut_disponibilite(profiles_all, responses_def)
     return st.session_state.cache_statuts_dispo
 
-# =====================================================================
-# OUTILS COMMUNS
-# =====================================================================
 SQL_MIGRATION = """-- À exécuter une seule fois dans Supabase (SQL Editor)
 alter table events add column if not exists target_rpe numeric;
 alter table events add column if not exists rpe_desactive boolean default false;
@@ -495,7 +475,6 @@ alter table profiles add column if not exists height_cm numeric;
 alter table profiles add column if not exists weight_kg numeric;
 alter table profiles add column if not exists position text;
 alter table profiles add column if not exists notes text;"""
-
 
 SQL_ALERTES = """create table if not exists alert_rules (
   id uuid primary key default gen_random_uuid(),
@@ -518,19 +497,27 @@ SQL_PROPRIETAIRES = """alter table profiles add column if not exists created_by 
 alter table teams add column if not exists created_by uuid;
 alter table questionnaires add column if not exists created_by uuid;"""
 
+def flash_succes(message, genre="succes"):
+    st.session_state.setdefault("_flash", []).append((genre, message))
+
+def afficher_flash():
+    for genre, message in st.session_state.pop("_flash", []):
+        if genre == "erreur":
+            st.error(message)
+        elif genre == "avertissement":
+            st.warning(message)
+        else:
+            st.success(message if str(message).startswith("✅") else f"✅ {message}")
 
 def date_fr(*args, **kwargs):
     kwargs.setdefault("format", "DD/MM/YYYY")
     return st.date_input(*args, **kwargs)
 
-
 def hid(texte):
     return hashlib.md5(str(texte).encode("utf-8")).hexdigest()[:10]
 
-
 def aff_df(df, masquer=("athlete_id", "event_id", "DateObj")):
     return df.drop(columns=[c for c in masquer if c in df.columns])
-
 
 def nb_coachs():
     if "_nb_coachs" not in st.session_state:
@@ -539,7 +526,6 @@ def nb_coachs():
         except Exception:
             st.session_state["_nb_coachs"] = 1
     return st.session_state["_nb_coachs"]
-
 
 def cloisonnement_actif():
     if "_colonne_created_by" not in st.session_state:
@@ -550,7 +536,6 @@ def cloisonnement_actif():
             st.session_state["_colonne_created_by"] = False
     return st.session_state["_colonne_created_by"]
 
-
 def est_a_moi(ligne):
     if not cloisonnement_actif():
         return True
@@ -559,40 +544,32 @@ def est_a_moi(ligne):
         return nb_coachs() <= 1
     return proprietaire == mon_id
 
-
 def mes_athletes():
     return [p for p in (supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []) if est_a_moi(p)]
-
 
 def mes_equipes():
     return [t for t in (supabase.table("teams").select("*").execute().data or []) if est_a_moi(t)]
 
-
 def ids_mes_athletes():
     return {p["id"] for p in mes_athletes()}
-
 
 def mes_evenements(events):
     ids = ids_mes_athletes()
     return [e for e in events if e.get("athlete_id") in ids]
 
-
 def mes_questionnaires(liste):
     return [q for q in liste if est_questionnaire_auto(q) or est_a_moi(q)]
-
 
 def athletes_sans_proprietaire():
     if not cloisonnement_actif():
         return []
     return [p for p in (supabase.table("profiles").select("*").eq("role", "athlete").execute().data or []) if p.get("created_by") in (None, "")]
 
-
 ICONES_ALERTES = {"douleur": "🩹", "blessure": "🚑", "rpe_joueur": "🔥", "rpe_equipe": "👥",
                   "wellness_stat": "📉", "gps_stat": "🛰️", "perso": "⚙️"}
 NOMS_ALERTES = {"douleur": "Douleur musculaire", "blessure": "Blessure", "rpe_joueur": "RPE joueur vs cible",
                 "rpe_equipe": "RPE équipe vs cible", "wellness_stat": "Réponse wellness extrême", "gps_stat": "GPS inhabituel",
                 "perso": "Mes alertes personnalisées"}
-
 
 def get_alertes_coach(force=False):
     jours = int(st.session_state.get("_al_jours", 30))
@@ -607,11 +584,9 @@ def get_alertes_coach(force=False):
     st.session_state["_cache_alertes"] = {"cle": cle, "t": time.time(), "data": data}
     return data
 
-
 def alertes_non_vues(force=False):
     vues = st.session_state.setdefault("alertes_vues", set())
     return [a for a in get_alertes_coach(force) if a["cle"] not in vues]
-
 
 def selecteur_periode(prefix):
     import calendar as _cal
@@ -640,10 +615,8 @@ def selecteur_periode(prefix):
         st.caption(f"Période affichée : du {debut.strftime('%d/%m/%Y')} au {fin.strftime('%d/%m/%Y')}")
     return debut, fin
 
-
 def _libelle_seance(cle, groupes):
     return f"{fmt_date_fr(cle[1], True)} — {cle[0]} ({len(groupes[cle])} joueur{'s' if len(groupes[cle]) > 1 else ''})"
-
 
 def render_analytique(df_resp_all, df_gps_all, events_by_id, noms_by_id, mode, nom_scope, prefix):
     est_equipe = mode == "equipe"
