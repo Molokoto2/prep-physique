@@ -11,6 +11,19 @@ import os
 import hashlib
 import time
 
+def flash_succes(message, genre="succes"):
+    """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
+    st.session_state.setdefault("_flash", []).append((genre, message))
+
+def afficher_flash():
+    for genre, message in st.session_state.pop("_flash", []):
+        if genre == "erreur":
+            st.error(message)
+        elif genre == "avertissement":
+            st.warning(message)
+        else:
+            st.success(message if str(message).startswith("✅") else f"✅ {message}")
+
 from sports_analytics import (
     supabase,
     SUPABASE_URL,
@@ -70,15 +83,11 @@ NOMS_METRIQUES_GPS = {
     "duree_secondes": "Durée (secondes)",
 }
 
-# Gestion de l'état de la barre latérale via la session Streamlit
-if "sidebar_state" not in st.session_state:
-    st.session_state.sidebar_state = "expanded"
-
 st.set_page_config(
     page_title="Performance+ | Prép. Physique",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state=st.session_state.sidebar_state
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
@@ -496,18 +505,6 @@ with check (exists (select 1 from profiles p where p.id = auth.uid() and p.role 
 SQL_PROPRIETAIRES = """alter table profiles add column if not exists created_by uuid;
 alter table teams add column if not exists created_by uuid;
 alter table questionnaires add column if not exists created_by uuid;"""
-
-def flash_succes(message, genre="succes"):
-    st.session_state.setdefault("_flash", []).append((genre, message))
-
-def afficher_flash():
-    for genre, message in st.session_state.pop("_flash", []):
-        if genre == "erreur":
-            st.error(message)
-        elif genre == "avertissement":
-            st.warning(message)
-        else:
-            st.success(message if str(message).startswith("✅") else f"✅ {message}")
 
 def date_fr(*args, **kwargs):
     kwargs.setdefault("format", "DD/MM/YYYY")
