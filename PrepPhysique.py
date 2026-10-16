@@ -71,6 +71,23 @@ NOMS_METRIQUES_GPS = {
     "duree_secondes": "Durée (secondes)",
 }
 
+def flash_succes(message, genre="succes"):
+    """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
+    st.session_state.setdefault("_flash", []).append((genre, message))
+
+
+def afficher_flash():
+    for genre, message in st.session_state.pop("_flash", []):
+        if genre == "erreur":
+            st.error(message)
+        elif genre == "avertissement":
+            st.warning(message)
+        else:
+            st.success(message if str(message).startswith("✅") else f"✅ {message}")
+
+
+
+
 st.set_page_config(
     page_title="Performance+ | Prép. Physique",
     page_icon="⚡",
@@ -251,6 +268,26 @@ st.markdown("""
     h2 { font-size: 1.75rem !important; margin-bottom: 0.4rem !important; }
     section[data-testid="stSidebar"] .stButton>button { width: 100%; }
 
+    /* ===== Calendrier : la grille garde 7 colonnes alignées sur téléphone ===== */
+    @media (max-width: 640px) {
+        [class*="st-key-plan_cal_grid"] [data-testid="stHorizontalBlock"], [class*="st-key-ath_cal_grid"] [data-testid="stHorizontalBlock"],
+        [class*="st-key-plan_cal_nav"] [data-testid="stHorizontalBlock"], [class*="st-key-ath_cal_nav"] [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important; gap: 2px !important;
+        }
+        [class*="st-key-plan_cal_grid"] [data-testid="stColumn"], [class*="st-key-ath_cal_grid"] [data-testid="stColumn"],
+        [class*="st-key-plan_cal_nav"] [data-testid="stColumn"], [class*="st-key-ath_cal_nav"] [data-testid="stColumn"] {
+            min-width: 0 !important; width: auto !important;
+        }
+        [class*="st-key-plan_cal_grid"] [data-testid="stColumn"], [class*="st-key-ath_cal_grid"] [data-testid="stColumn"] { flex: 1 1 0 !important; }
+        [class*="st-key-plan_cal_grid"] .stButton > button, [class*="st-key-ath_cal_grid"] .stButton > button {
+            padding: 2px 1px !important; min-height: 30px !important; font-size: 0.6rem !important; line-height: 1.1 !important;
+        }
+        [class*="st-key-plan_cal_grid"] .stButton > button p, [class*="st-key-ath_cal_grid"] .stButton > button p {
+            font-size: 0.6rem !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0;
+        }
+        [class*="st-key-plan_cal_grid"] [data-testid="stMarkdownContainer"] p, [class*="st-key-ath_cal_grid"] [data-testid="stMarkdownContainer"] p { font-size: 0.78rem; margin: 0; }
+    }
+
     /* ===== Téléphone ===== */
     @media (max-width: 768px) {
         .block-container { padding: 5.2rem 0.8rem 3rem 0.8rem !important; }
@@ -427,6 +464,7 @@ def rendre_formulaire_questionnaire(q_obj, event_id, key_suffix, reponses_deja=N
 
 MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
 JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+JOURS_LONG = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 
 def maintenant_local():
     """Heure actuelle en France (le serveur Streamlit tourne en UTC : sans ça, l'ouverture des questionnaires serait décalée de 1 à 2 h)."""
@@ -529,19 +567,12 @@ alter table teams add column if not exists created_by uuid;
 alter table questionnaires add column if not exists created_by uuid;"""
 
 
-def flash_succes(message, genre="succes"):
-    """Message de confirmation qui survit au rechargement de la page (st.rerun)."""
-    st.session_state.setdefault("_flash", []).append((genre, message))
-
-
-def afficher_flash():
-    for genre, message in st.session_state.pop("_flash", []):
-        if genre == "erreur":
-            st.error(message)
-        elif genre == "avertissement":
-            st.warning(message)
-        else:
-            st.success(message if str(message).startswith("✅") else f"✅ {message}")
+def conteneur_cle(cle):
+    """Conteneur Streamlit avec une clé (classe CSS `st-key-<cle>`), pour cibler le calendrier en CSS."""
+    try:
+        return st.container(key=cle)
+    except TypeError:
+        return st.container()
 
 
 def date_fr(*args, **kwargs):
@@ -1316,50 +1347,7 @@ if menu == "📅 Planning & Séances":
             if "cal_seance_sel" not in st.session_state:
                 st.session_state.cal_seance_sel = None
 
-            c_nav1, c_nav2, c_nav3 = st.columns([1, 3, 1])
-            with c_nav1:
-                if st.button("◀ Mois précédent", use_container_width=True, key="plan_mois_prec"):
-                    ref = st.session_state.cal_mois_ref
-                    st.session_state.cal_mois_ref = (ref.replace(day=1) - timedelta(days=1)).replace(day=1)
-                    st.rerun()
-            with c_nav2:
-                ref = st.session_state.cal_mois_ref
-                st.markdown(f"<h4 style='text-align:center;'>📅 {MOIS_FR[ref.month - 1].capitalize()} {ref.year}</h4>", unsafe_allow_html=True)
-            with c_nav3:
-                if st.button("Mois suivant ▶", use_container_width=True, key="plan_mois_suiv"):
-                    ref = st.session_state.cal_mois_ref
-                    st.session_state.cal_mois_ref = (ref.replace(day=28) + timedelta(days=4)).replace(day=1)
-                    st.rerun()
-
-            annee, mois = st.session_state.cal_mois_ref.year, st.session_state.cal_mois_ref.month
-            for c, jl in zip(st.columns(7), JOURS_FR):
-                c.markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:600;'>{jl}</div>", unsafe_allow_html=True)
-
-            for semaine in _calendar.monthcalendar(annee, mois):
-                for c, jour_num in zip(st.columns(7), semaine):
-                    if jour_num == 0:
-                        c.markdown("&nbsp;", unsafe_allow_html=True)
-                        continue
-                    date_cell = datetime(annee, mois, jour_num).date()
-                    est_aujourdhui = date_cell == datetime.now().date()
-                    style_jour = "color:#38bdf8; font-weight:800;" if est_aujourdhui else "color:#f1f5f9; font-weight:600;"
-                    c.markdown(f"<div style='{style_jour}'>{jour_num}</div>", unsafe_allow_html=True)
-                    for k in events_par_jour.get(date_cell, [])[:4]:
-                        grp = groupes[k]
-                        emoji_type = "⚔️" if grp[0].get("event_type") == "match" else "🏋️"
-                        suffixe = f" ×{len(grp)}" if len(grp) > 1 else ""
-                        aide = f"{k[0]} — {fmt_date_fr(k[1], True)} — " + (", ".join(noms_by_id.get(e.get('athlete_id'), '?') for e in grp[:6]) + ("…" if len(grp) > 6 else ""))
-                        if c.button(f"{emoji_type} {k[0][:9]}{suffixe}", key=f"cal_btn_{hid('||'.join(k))}", help=aide, use_container_width=True):
-                            st.session_state.cal_seance_sel = "||".join(k)
-                            st.rerun()
-                    if len(events_par_jour.get(date_cell, [])) > 4:
-                        c.caption(f"+{len(events_par_jour[date_cell]) - 4} autre(s)")
-
-            st.markdown("---")
-            cle_sel = st.session_state.cal_seance_sel
-            grp_sel = groupes_par_cle.get(cle_sel) if cle_sel else None
-
-            if grp_sel:
+            def _panneau_seance(grp_sel, cle_sel):
                 ev_sel = grp_sel[0]
                 ids_groupe = [e["id"] for e in grp_sel]
                 gid = hid(cle_sel)
@@ -1436,9 +1424,86 @@ if menu == "📅 Planning & Séances":
                     if st.button("✖ Fermer", key=f"close_ev_{gid}"):
                         st.session_state.cal_seance_sel = None
                         st.rerun()
-            else:
-                st.info("👆 Clique sur une séance du calendrier pour voir son effectif et la modifier.")
 
+            # ---- Navigation du mois (reste sur une seule ligne, même sur téléphone) ----
+            with conteneur_cle("plan_cal_nav"):
+                c_nav1, c_nav2, c_nav3 = st.columns([1, 4, 1])
+                with c_nav1:
+                    if st.button("◀", use_container_width=True, key="plan_mois_prec", help="Mois précédent"):
+                        ref = st.session_state.cal_mois_ref
+                        st.session_state.cal_mois_ref = (ref.replace(day=1) - timedelta(days=1)).replace(day=1)
+                        st.rerun()
+                with c_nav2:
+                    ref = st.session_state.cal_mois_ref
+                    st.markdown(f"<h4 style='text-align:center; margin:0.2rem 0;'>📅 {MOIS_FR[ref.month - 1].capitalize()} {ref.year}</h4>", unsafe_allow_html=True)
+                with c_nav3:
+                    if st.button("▶", use_container_width=True, key="plan_mois_suiv", help="Mois suivant"):
+                        ref = st.session_state.cal_mois_ref
+                        st.session_state.cal_mois_ref = (ref.replace(day=28) + timedelta(days=4)).replace(day=1)
+                        st.rerun()
+
+            annee, mois = st.session_state.cal_mois_ref.year, st.session_state.cal_mois_ref.month
+            aff_cal = st.radio("Affichage :", ["📋 Agenda (conseillé sur téléphone)", "🗓️ Grille"], horizontal=True, key="plan_cal_aff")
+
+            if aff_cal.startswith("📋"):
+                # ---------------- Agenda : une ligne par séance, jour par jour ----------------
+                jours_mois = sorted(d for d in events_par_jour if d.year == annee and d.month == mois)
+                panneau_montre = False
+                if not jours_mois:
+                    st.info("Aucune séance ce mois-ci.")
+                for d in jours_mois:
+                    st.markdown(f"##### 📅 {JOURS_LONG[d.weekday()].capitalize()} {d.day} {MOIS_FR[d.month - 1]}" + ("  ·  🔴 Aujourd'hui" if d == maintenant_local().date() else ""))
+                    for k in events_par_jour[d]:
+                        grp = groupes[k]
+                        cle_k = "||".join(k)
+                        heure = (parse_dt(k[1]).strftime("%H:%M") if parse_dt(k[1]) else "")
+                        emoji_type = "⚔️" if grp[0].get("event_type") == "match" else "🏋️"
+                        suffixe = f" · {len(grp)} joueurs" if len(grp) > 1 else ""
+                        choisi = st.session_state.cal_seance_sel == cle_k
+                        if st.button(("🔽 " if choisi else "") + f"{emoji_type} {heure} — {k[0]}{suffixe}", key=f"plan_ag_{hid(cle_k)}", use_container_width=True, type="primary" if choisi else "secondary"):
+                            st.session_state.cal_seance_sel = None if choisi else cle_k
+                            st.rerun()
+                        if choisi:
+                            _panneau_seance(grp, cle_k)
+                            panneau_montre = True
+                cle_sel = st.session_state.cal_seance_sel
+                if cle_sel and not panneau_montre and groupes_par_cle.get(cle_sel):
+                    st.markdown("---")
+                    _panneau_seance(groupes_par_cle[cle_sel], cle_sel)
+                elif not cle_sel and jours_mois:
+                    st.caption("👆 Touche une séance pour voir son effectif et la modifier.")
+            else:
+                # ---------------- Grille mensuelle (7 colonnes, y compris sur téléphone) ----------------
+                with conteneur_cle("plan_cal_grid"):
+                    for c, jl in zip(st.columns(7), JOURS_FR):
+                        c.markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:600; font-size:0.8em;'>{jl[:3]}</div>", unsafe_allow_html=True)
+                    for semaine in _calendar.monthcalendar(annee, mois):
+                        for c, jour_num in zip(st.columns(7), semaine):
+                            if jour_num == 0:
+                                c.markdown("&nbsp;", unsafe_allow_html=True)
+                                continue
+                            date_cell = datetime(annee, mois, jour_num).date()
+                            est_aujourdhui = date_cell == maintenant_local().date()
+                            style_jour = "color:#38bdf8; font-weight:800;" if est_aujourdhui else "color:#f1f5f9; font-weight:600;"
+                            c.markdown(f"<div style='{style_jour} text-align:center;'>{jour_num}</div>", unsafe_allow_html=True)
+                            for k in events_par_jour.get(date_cell, [])[:4]:
+                                grp = groupes[k]
+                                emoji_type = "⚔️" if grp[0].get("event_type") == "match" else "🏋️"
+                                suffixe = f" ×{len(grp)}" if len(grp) > 1 else ""
+                                aide = f"{k[0]} — {fmt_date_fr(k[1], True)} — " + (", ".join(noms_by_id.get(e.get('athlete_id'), '?') for e in grp[:6]) + ("…" if len(grp) > 6 else ""))
+                                if c.button(f"{emoji_type} {k[0][:9]}{suffixe}", key=f"cal_btn_{hid('||'.join(k))}", help=aide, use_container_width=True):
+                                    st.session_state.cal_seance_sel = "||".join(k)
+                                    st.rerun()
+                            if len(events_par_jour.get(date_cell, [])) > 4:
+                                c.caption(f"+{len(events_par_jour[date_cell]) - 4}")
+
+                st.markdown("---")
+                cle_sel = st.session_state.cal_seance_sel
+                grp_sel = groupes_par_cle.get(cle_sel) if cle_sel else None
+                if grp_sel:
+                    _panneau_seance(grp_sel, cle_sel)
+                else:
+                    st.info("👆 Clique sur une séance du calendrier pour voir son effectif et la modifier.")
 
 # =====================================================================
 # PAGE : ALERTES
@@ -2515,37 +2580,14 @@ elif menu == "📆 Calendrier":
                     st.button(f"Ouvrir {MOIS_FR[mois - 1]} ({nb} séance{'s' if nb > 1 else ''})", key=f"ath_open_{ref.year}_{mois}",
                               use_container_width=True, on_click=_ouvrir_mois, args=(ref.year, mois))
     else:
-        c1, c2, c3 = st.columns([1, 3, 1])
-        c1.button("◀ Mois précédent", use_container_width=True, key="ath_cal_prev", on_click=_decaler_mois, args=(-1,))
-        c2.markdown(f"<h4 style='text-align:center;'>📅 {MOIS_FR[ref.month - 1].capitalize()} {ref.year}</h4>", unsafe_allow_html=True)
-        c3.button("Mois suivant ▶", use_container_width=True, key="ath_cal_next", on_click=_decaler_mois, args=(1,))
+        # ---------------- Navigation du mois (reste sur une seule ligne, même sur téléphone) ----------------
+        with conteneur_cle("ath_cal_nav"):
+            c1, c2, c3 = st.columns([1, 4, 1])
+            c1.button("◀", use_container_width=True, key="ath_cal_prev", on_click=_decaler_mois, args=(-1,), help="Mois précédent")
+            c2.markdown(f"<h4 style='text-align:center; margin:0.2rem 0;'>📅 {MOIS_FR[ref.month - 1].capitalize()} {ref.year}</h4>", unsafe_allow_html=True)
+            c3.button("▶", use_container_width=True, key="ath_cal_next", on_click=_decaler_mois, args=(1,), help="Mois suivant")
 
-        for c, jl in zip(st.columns(7), JOURS_FR):
-            c.markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:600;'>{jl}</div>", unsafe_allow_html=True)
-
-        for semaine in _calendar.monthcalendar(ref.year, ref.month):
-            for c, jour_num in zip(st.columns(7), semaine):
-                if jour_num == 0:
-                    c.markdown("&nbsp;", unsafe_allow_html=True)
-                    continue
-                date_cell = datetime(ref.year, ref.month, jour_num).date()
-                style_jour = "color:#38bdf8; font-weight:800;" if date_cell == aujourdhui else "color:#f1f5f9; font-weight:600;"
-                c.markdown(f"<div style='{style_jour}'>{jour_num}</div>", unsafe_allow_html=True)
-                evs_jour = events_par_jour.get(date_cell, [])
-                for ev in evs_jour[:4]:
-                    emoji_type = "⚔️" if ev.get("event_type") == "match" else "🏋️"
-                    pdf = " 📎" if ev["id"] in ev_avec_pdf else ""
-                    if c.button(f"{emoji_type} {ev.get('title', 'Séance')[:8]}{pdf}", key=f"ath_cal_btn_{ev['id']}", help=str(ev.get("title")), use_container_width=True):
-                        st.session_state.ath_cal_event = ev["id"]
-                        st.rerun()
-                if len(evs_jour) > 4:
-                    c.caption(f"+{len(evs_jour) - 4} autre(s)")
-
-        st.markdown("---")
-        ev_sel = next((e for e in events_mine_raw if e["id"] == st.session_state.ath_cal_event), None)
-        if not ev_sel:
-            st.info("👆 Clique sur une séance pour voir son détail (documents PDF, tes réponses, ton rapport GPS).")
-        else:
+        def _detail_seance(ev_sel):
             d0 = _parser_datetime_event(ev_sel)
             d1 = _parser_datetime_event(ev_sel, "end_time")
             horaire = (d0.strftime("%d/%m/%Y à %H:%M") + (f" → {d1.strftime('%H:%M')}" if d1 else "")) if d0 else ""
@@ -2582,6 +2624,61 @@ elif menu == "📆 Calendrier":
             if st.button("✖ Fermer le détail", key="ath_cal_close"):
                 st.session_state.ath_cal_event = None
                 st.rerun()
+
+        aff_cal = st.radio("Affichage :", ["📋 Agenda (conseillé sur téléphone)", "🗓️ Grille"], horizontal=True, key="ath_cal_aff")
+        if aff_cal.startswith("📋"):
+            # ---------------- Agenda : une ligne par séance, jour par jour ----------------
+            jours_mois = sorted(d for d in events_par_jour if d.year == ref.year and d.month == ref.month)
+            detail_montre = False
+            if not jours_mois:
+                st.info("Aucune séance ce mois-ci.")
+            for d in jours_mois:
+                st.markdown(f"##### 📅 {JOURS_LONG[d.weekday()].capitalize()} {d.day} {MOIS_FR[d.month - 1]}" + ("  ·  🔴 Aujourd'hui" if d == aujourdhui else ""))
+                for ev in events_par_jour[d]:
+                    heure = (_parser_datetime_event(ev).strftime("%H:%M") if _parser_datetime_event(ev) else "")
+                    emoji_type = "⚔️" if ev.get("event_type") == "match" else "🏋️"
+                    pdf = "  📎" if ev["id"] in ev_avec_pdf else ""
+                    choisi = st.session_state.ath_cal_event == ev["id"]
+                    if st.button(("🔽 " if choisi else "") + f"{emoji_type} {heure} — {ev.get('title', 'Séance')}{pdf}", key=f"ath_ag_{ev['id']}", use_container_width=True, type="primary" if choisi else "secondary"):
+                        st.session_state.ath_cal_event = None if choisi else ev["id"]
+                        st.rerun()
+                    if choisi:
+                        _detail_seance(ev)
+                        detail_montre = True
+            ev_hors = next((e for e in events_mine_raw if e["id"] == st.session_state.ath_cal_event), None)
+            if ev_hors and not detail_montre:
+                st.markdown("---")
+                _detail_seance(ev_hors)
+            elif not ev_hors and jours_mois:
+                st.caption("👆 Touche une séance pour voir son détail (documents PDF, tes réponses, ton rapport GPS).")
+        else:
+            # ---------------- Grille mensuelle (7 colonnes, y compris sur téléphone) ----------------
+            with conteneur_cle("ath_cal_grid"):
+                for c, jl in zip(st.columns(7), JOURS_FR):
+                    c.markdown(f"<div style='text-align:center; color:#94a3b8; font-weight:600; font-size:0.8em;'>{jl[:3]}</div>", unsafe_allow_html=True)
+                for semaine in _calendar.monthcalendar(ref.year, ref.month):
+                    for c, jour_num in zip(st.columns(7), semaine):
+                        if jour_num == 0:
+                            c.markdown("&nbsp;", unsafe_allow_html=True)
+                            continue
+                        date_cell = datetime(ref.year, ref.month, jour_num).date()
+                        style_jour = "color:#38bdf8; font-weight:800;" if date_cell == aujourdhui else "color:#f1f5f9; font-weight:600;"
+                        c.markdown(f"<div style='{style_jour} text-align:center;'>{jour_num}</div>", unsafe_allow_html=True)
+                        evs_jour = events_par_jour.get(date_cell, [])
+                        for ev in evs_jour[:4]:
+                            emoji_type = "⚔️" if ev.get("event_type") == "match" else "🏋️"
+                            pdf = " 📎" if ev["id"] in ev_avec_pdf else ""
+                            if c.button(f"{emoji_type} {ev.get('title', 'Séance')[:8]}{pdf}", key=f"ath_cal_btn_{ev['id']}", help=str(ev.get("title")), use_container_width=True):
+                                st.session_state.ath_cal_event = ev["id"]
+                                st.rerun()
+                        if len(evs_jour) > 4:
+                            c.caption(f"+{len(evs_jour) - 4}")
+            st.markdown("---")
+            ev_sel = next((e for e in events_mine_raw if e["id"] == st.session_state.ath_cal_event), None)
+            if not ev_sel:
+                st.info("👆 Clique sur une séance pour voir son détail (documents PDF, tes réponses, ton rapport GPS).")
+            else:
+                _detail_seance(ev_sel)
 
 # =====================================================================
 # PAGE (ATHLÈTE) : MES DONNÉES (même analytique que le coach, pour un seul joueur)
